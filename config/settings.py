@@ -13,7 +13,7 @@ Autor: PcComponentes - Product Discovery & Content
 
 import os
 from datetime import datetime
-from typing import Optional
+from typing import Optional, Tuple
 import streamlit as st
 
 
