@@ -64,7 +64,7 @@ def render_content_inputs() -> Tuple[bool, Dict]:
                         show_disclaimer=True
                     )
                     config['gsc_analysis'] = gsc_analysis
-                except Exception as e:
+                except Exception:
                     # GSC falló, continuar sin verificación
                     pass
         except:
@@ -114,12 +114,18 @@ def render_content_inputs() -> Tuple[bool, Dict]:
 
 
 # ============================================================================
-# RESTO DE FUNCIONES (igual que antes)
+# SECCIONES DE INPUT
 # ============================================================================
 
 def render_arquetipo_section() -> Tuple[Optional[str], Dict]:
+    """Renderiza sección de selección de arquetipo"""
     st.info("Los **arquetipos** son plantillas predefinidas.")
-    arquetipos = list_arquetipos()
+    
+    # ✅ CORRECCIÓN: Obtener códigos y luego convertir a dicts
+    arquetipos_codes = list_arquetipos()
+    arquetipos = [get_arquetipo(code) for code in arquetipos_codes]
+    
+    # ✅ Ahora sí podemos acceder a arq['code'] y arq['name']
     arquetipo_options = {f"{arq['code']} - {arq['name']}": arq['code'] for arq in arquetipos}
     
     selected_display = st.selectbox(
@@ -137,61 +143,117 @@ def render_arquetipo_section() -> Tuple[Optional[str], Dict]:
     with st.expander("ℹ️ Información del Arquetipo", expanded=False):
         st.markdown(f"**{arquetipo['name']}**")
         st.caption(arquetipo['description'])
+        st.caption(f"📊 Embudo: {arquetipo['funnel']} | 📝 Longitud sugerida: {arquetipo['default_length']} palabras")
     
+    # ✅ CORRECCIÓN: campos_especificos es un DICT, no una lista
     campos_valores = {}
-    campos_especificos = arquetipo.get('campos_especificos', [])
+    campos_especificos = arquetipo.get('campos_especificos', {})
     
     if campos_especificos:
-        st.markdown("#### 📝 Campos Específicos")
-        for campo in campos_especificos:
-            label = campo['label'] + (" *" if campo.get('required') else "")
-            if campo['type'] == 'text':
-                campos_valores[campo['key']] = st.text_input(label, placeholder=campo.get('placeholder', ''))
-            elif campo['type'] == 'textarea':
-                campos_valores[campo['key']] = st.text_area(label, placeholder=campo.get('placeholder', ''), height=100)
+        st.markdown("#### 📝 Campos Específicos del Arquetipo")
+        st.caption("Completa la información relevante para este tipo de contenido")
+        
+        for campo_key, campo_info in campos_especificos.items():
+            label = campo_info['label']
+            if campo_info.get('required', False):
+                label += " *"
+            
+            if campo_info['type'] == 'text':
+                campos_valores[campo_key] = st.text_input(
+                    label, 
+                    placeholder=campo_info.get('placeholder', ''),
+                    help=campo_info.get('help', ''),
+                    key=f"campo_{campo_key}"
+                )
+            elif campo_info['type'] == 'textarea':
+                campos_valores[campo_key] = st.text_area(
+                    label, 
+                    placeholder=campo_info.get('placeholder', ''),
+                    help=campo_info.get('help', ''),
+                    height=100,
+                    key=f"campo_{campo_key}"
+                )
     
     return arquetipo_code, campos_valores
 
 
 def render_product_section() -> Optional[Dict]:
+    """Renderiza sección de producto"""
     st.info("Introduce la URL del producto para scrapear datos automáticamente.")
     
     col1, col2 = st.columns([3, 1])
     with col1:
-        product_url = st.text_input("URL del Producto (opcional)", placeholder="https://www.pccomponentes.com/...")
+        product_url = st.text_input(
+            "URL del Producto (opcional)", 
+            placeholder="https://www.pccomponentes.com/..."
+        )
     with col2:
-        scrape_button = st.button("🔍 Scrapear", disabled=not product_url or len(product_url.strip()) < 10, use_container_width=True)
+        scrape_button = st.button(
+            "🔍 Scrapear", 
+            disabled=not product_url or len(product_url.strip()) < 10, 
+            use_container_width=True
+        )
     
     if scrape_button and product_url:
-        with st.spinner("Scrapeando..."):
+        with st.spinner("Scrapeando producto..."):
             pdp_data = scrape_pdp_data(product_url)
             if pdp_data:
-                st.success("✅ Producto scrapeado")
+                st.success("✅ Producto scrapeado correctamente")
                 st.session_state['scraped_pdp_data'] = pdp_data
+                
+                # Mostrar preview
+                with st.expander("👀 Preview de datos scrapeados", expanded=False):
+                    col_a, col_b = st.columns(2)
+                    with col_a:
+                        st.markdown(f"**Nombre:** {pdp_data.get('name', 'N/A')}")
+                        st.markdown(f"**Precio:** {pdp_data.get('price', 'N/A')} €")
+                    with col_b:
+                        st.markdown(f"**Marca:** {pdp_data.get('brand', 'N/A')}")
+                        st.markdown(f"**Disponibilidad:** {pdp_data.get('availability', 'N/A')}")
+                
                 return pdp_data
             else:
-                st.error("❌ Error al scrapear")
+                st.error("❌ Error al scrapear el producto")
     
+    # Retornar datos previamente scrapeados si existen
     return st.session_state.get('scraped_pdp_data')
 
 
 def render_keywords_section() -> Tuple[List[str], str]:
-    keyword_principal = st.text_input("Keyword Principal *", placeholder="Ej: mejor portátil gaming 2025")
-    keywords_secundarias_input = st.text_area("Keywords Secundarias", placeholder="keyword 1\nkeyword 2", height=100)
+    """Renderiza sección de keywords"""
+    keyword_principal = st.text_input(
+        "Keyword Principal *", 
+        placeholder="Ej: mejor portátil gaming 2025"
+    )
+    
+    keywords_secundarias_input = st.text_area(
+        "Keywords Secundarias (una por línea)", 
+        placeholder="keyword secundaria 1\nkeyword secundaria 2\nkeyword secundaria 3",
+        height=100
+    )
     
     keywords = []
     if keyword_principal:
         keywords.append(keyword_principal.strip())
+    
     if keywords_secundarias_input:
-        secundarias = [k.strip() for k in keywords_secundarias_input.split('\n') if k.strip() and k.strip() != keyword_principal]
+        secundarias = [
+            k.strip() for k in keywords_secundarias_input.split('\n') 
+            if k.strip() and k.strip() != keyword_principal
+        ]
         keywords.extend(secundarias[:MAX_KEYWORDS-1])
     
-    objetivo = st.text_area("Objetivo del Contenido *", placeholder="¿Qué quieres lograr?", height=100)
+    objetivo = st.text_area(
+        "Objetivo del Contenido *", 
+        placeholder="¿Qué quieres lograr con este contenido?",
+        height=100
+    )
     
     return keywords, objetivo
 
 
 def render_content_config_section(arquetipo: Dict) -> Tuple[int, str]:
+    """Renderiza configuración del contenido"""
     col1, col2 = st.columns(2)
     
     with col1:
@@ -205,21 +267,32 @@ def render_content_config_section(arquetipo: Dict) -> Tuple[int, str]:
         )
     
     with col2:
-        st.info(f"💡 Sugerencia: ~{default_length} palabras")
+        st.info(f"💡 Sugerencia del arquetipo: ~{default_length} palabras")
     
-    context = st.text_area("Contexto Adicional (opcional)", placeholder="Información adicional...", height=100)
+    context = st.text_area(
+        "Contexto Adicional (opcional)", 
+        placeholder="Información adicional, datos internos, perspectiva única...",
+        height=100
+    )
     
     return target_length, context
 
 
 def render_links_section() -> Dict:
-    st.markdown("#### 🔗 Enlace Principal")
+    """Renderiza sección de enlaces"""
+    st.markdown("#### 🔗 Enlace Principal (Recomendado)")
     
     col1, col2 = st.columns(2)
     with col1:
-        link_url = st.text_input("URL del enlace principal", placeholder="https://...")
+        link_url = st.text_input(
+            "URL del enlace principal", 
+            placeholder="https://www.pccomponentes.com/categoria"
+        )
     with col2:
-        link_text = st.text_input("Texto anchor", placeholder="texto del enlace")
+        link_text = st.text_input(
+            "Texto anchor del enlace", 
+            placeholder="Ej: portátiles gaming"
+        )
     
     return {
         'principal': {'url': link_url, 'text': link_text},
@@ -228,35 +301,69 @@ def render_links_section() -> Dict:
 
 
 def render_extras_section() -> Tuple[Dict, List[str]]:
-    st.markdown("#### 🎯 Producto Alternativo")
+    """Renderiza sección de extras"""
+    st.markdown("#### 🎯 Producto Alternativo (Opcional)")
+    st.caption("Para incluir en el veredicto final como alternativa")
     
     col1, col2 = st.columns(2)
     with col1:
-        alt_url = st.text_input("URL producto alternativo", placeholder="https://...")
+        alt_url = st.text_input(
+            "URL del producto alternativo", 
+            placeholder="https://www.pccomponentes.com/producto"
+        )
     with col2:
-        alt_text = st.text_input("Nombre del producto", placeholder="Nombre...")
+        alt_text = st.text_input(
+            "Nombre del producto alternativo", 
+            placeholder="Nombre del producto"
+        )
     
     return {'url': alt_url, 'text': alt_text}, []
 
 
+# ============================================================================
+# VALIDACIÓN Y RESUMEN
+# ============================================================================
+
 def validate_inputs(config: Dict) -> Tuple[bool, List[str]]:
+    """Valida que todos los inputs obligatorios estén completos"""
     errors = []
     
     if not config.get('arquetipo_codigo'):
         errors.append("❌ Selecciona un arquetipo")
+    
     if not config.get('keywords') or len(config['keywords']) == 0:
-        errors.append("❌ Keyword principal requerida")
+        errors.append("❌ Introduce al menos una keyword principal")
+    
     if not config.get('objetivo') or len(config['objetivo'].strip()) < 10:
-        errors.append("❌ Describe el objetivo")
+        errors.append("❌ Describe el objetivo del contenido (mínimo 10 caracteres)")
+    
     if not config.get('target_length') or config['target_length'] < MIN_CONTENT_LENGTH:
-        errors.append(f"❌ Longitud mínima: {MIN_CONTENT_LENGTH} palabras")
+        errors.append(f"❌ La longitud mínima es {MIN_CONTENT_LENGTH} palabras")
     
     return len(errors) == 0, errors
 
 
 def render_generation_summary(config: Dict, arquetipo: Dict) -> None:
-    st.markdown("### 📋 Resumen")
-    st.info("✅ Todo listo. El proceso tomará 3-5 minutos.")
+    """Renderiza resumen antes de generar"""
+    st.markdown("### 📋 Resumen de Configuración")
+    
+    col1, col2 = st.columns(2)
+    
+    with col1:
+        st.markdown("**Contenido:**")
+        st.markdown(f"- 📚 Arquetipo: {arquetipo['name']}")
+        st.markdown(f"- 📝 Longitud: {config['target_length']:,} palabras")
+        st.markdown(f"- 🔑 Keywords: {len(config['keywords'])} configuradas")
+    
+    with col2:
+        st.markdown("**Extras:**")
+        pdp = "✅ Sí" if config.get('pdp_data') else "❌ No"
+        st.markdown(f"- 🛒 Producto scrapeado: {pdp}")
+        
+        links = "✅ Sí" if config['links']['principal'].get('url') else "❌ No"
+        st.markdown(f"- 🔗 Enlaces configurados: {links}")
+    
+    st.info("✅ Todo listo. El proceso de generación tomará aproximadamente 3-5 minutos.")
 
 
 __version__ = "4.1.1"
