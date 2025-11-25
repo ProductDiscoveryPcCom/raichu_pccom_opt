@@ -43,26 +43,26 @@ CONTAINS_MATCH = True  # También buscar si keyword está contenida
 # CARGA Y PROCESAMIENTO DEL CSV
 # ============================================================================
 
-@st.cache_data(ttl=3600)  # Cache por 1 hora
+@st.cache_data(ttl=3600)
 def load_gsc_data(csv_path: str = DEFAULT_GSC_CSV_PATH) -> Optional[pd.DataFrame]:
     """
     Carga el CSV de datos de Google Search Console.
-    
-    Args:
-        csv_path: Ruta al archivo CSV
-        
-    Returns:
-        DataFrame con los datos o None si falla
-        
-    Notes:
-        - Usa cache de Streamlit para evitar recargas
-        - Valida estructura del CSV
-        - Filtra y limpia datos según criterios
     """
     
     try:
-        # Cargar CSV
+        # Autodetección de delimitador
         df = pd.read_csv(csv_path, sep=None, engine='python')
+        
+        # Normalizar nombres de columnas (minúsculas, sin espacios)
+        df.columns = df.columns.str.strip().str.lower()
+        
+        # ✅ MAPEO DE COLUMNAS - Adaptar nombres del CSV a los esperados
+        column_mapping = {
+            'url': 'page',
+            'keyword': 'query',
+            # Añadir más mapeos si es necesario
+        }
+        df = df.rename(columns=column_mapping)
         
         # Validar columnas requeridas
         required_columns = ['page', 'query', 'clicks', 'impressions', 'ctr', 'position']
@@ -70,6 +70,7 @@ def load_gsc_data(csv_path: str = DEFAULT_GSC_CSV_PATH) -> Optional[pd.DataFrame
         
         if missing_columns:
             st.error(f"❌ Columnas faltantes en CSV: {', '.join(missing_columns)}")
+            st.info(f"Columnas encontradas: {', '.join(df.columns.tolist())}")
             return None
         
         # Convertir tipos
@@ -81,7 +82,7 @@ def load_gsc_data(csv_path: str = DEFAULT_GSC_CSV_PATH) -> Optional[pd.DataFrame
         # Eliminar filas con valores nulos en columnas críticas
         df = df.dropna(subset=['page', 'query', 'position', 'impressions'])
         
-        # Ya viene filtrado del CSV, pero por si acaso validamos
+        # Filtrar datos según criterios
         df = df[
             (df['position'] <= 50) &
             (df['impressions'] >= 10) &
@@ -95,11 +96,11 @@ def load_gsc_data(csv_path: str = DEFAULT_GSC_CSV_PATH) -> Optional[pd.DataFrame
         return df
     
     except FileNotFoundError:
-        st.error(f"❌ No se encontró el archivo CSV: {csv_path}")
+        st.warning(f"⚠️ No se encontró el archivo CSV: {csv_path}")
         return None
     
     except Exception as e:
-        st.error(f"❌ Error al cargar CSV de GSC: {str(e)}")
+        st.warning(f"⚠️ Error al cargar CSV de GSC: {str(e)}")
         return None
 
 
