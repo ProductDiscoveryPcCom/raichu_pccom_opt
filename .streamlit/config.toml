@@ -1,0 +1,53 @@
+# ============================================================================
+# Streamlit Configuration - PcComponentes Content Generator
+# Versión 4.1.1
+# ============================================================================
+
+[theme]
+# Colores de PcComponentes
+primaryColor = "#FF6000"        # Naranja PcComponentes
+backgroundColor = "#FFFFFF"      # Blanco
+secondaryBackgroundColor = "#F0F2F6"  # Gris claro
+textColor = "#262730"           # Negro
+font = "sans serif"
+
+[server]
+# Puerto (default: 8501)
+port = 8501
+
+# Tamaño máximo de upload en MB
+maxUploadSize = 200
+
+# Habilitar XSRF protection
+enableXsrfProtection = true
+
+# CORS
+enableCORS = false
+
+# WebSocket compression
+enableWebsocketCompression = true
+
+[browser]
+# Abrir browser automáticamente
+gatherUsageStats = false
+
+[runner]
+# Magic commands
+magicEnabled = true
+
+# Fast rerun
+fastReruns = true
+
+[client]
+# Toolbar mode
+toolbarMode = "minimal"
+
+# Show error details
+showErrorDetails = true
+
+[logger]
+# Log level
+level = "info"
+
+# Message format
+messageFormat = "%(asctime)s %(message)s"
