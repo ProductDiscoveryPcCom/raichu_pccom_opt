@@ -57,6 +57,15 @@ def get_api_key() -> Optional[str]:
 # API Key de Claude
 CLAUDE_API_KEY = get_api_key()
 
+def get_semrush_api_key() -> Optional[str]:
+    try:
+        if hasattr(st, 'secrets') and 'api' in st.secrets:
+            return st.secrets['api'].get('semrush_key')
+    except:
+        pass
+    return os.getenv('SEMRUSH_API_KEY')
+
+SEMRUSH_API_KEY = get_semrush_api_key()
 
 # ============================================================================
 # CONFIGURACIÓN DE CLAUDE
