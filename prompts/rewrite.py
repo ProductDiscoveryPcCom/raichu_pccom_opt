@@ -17,6 +17,7 @@ Autor: PcComponentes - Product Discovery & Content
 """
 
 import json
+import re
 from typing import Dict, List, Optional
 
 # Importar configuración y estilos
@@ -122,6 +123,113 @@ HTML_STRUCTURE_INSTRUCTIONS = """
   <p class="note">Nota final del artículo.</p>
 </article>
 """
+
+
+# ============================================================================
+# FUNCIONES DE FORMATEO DE COMPETIDORES
+# ============================================================================
+
+def format_competitors_for_prompt(competitors_data: List[Dict]) -> List[Dict[str, str]]:
+    """
+    Formatea los datos de competidores para usar en el prompt de análisis.
+    
+    Esta función es el punto de entrada principal para formatear datos de
+    competidores antes de pasarlos al prompt de análisis competitivo.
+    
+    Args:
+        competitors_data: Lista de dicts con datos de competidores.
+            Cada dict puede contener:
+            - url: URL del competidor
+            - title: Título de la página
+            - content: Contenido scrapeado
+            - word_count: Número de palabras
+            - scrape_success: Si el scraping fue exitoso
+            
+    Returns:
+        Lista de dicts formateados con 'url', 'title', 'content' listos
+        para ser usados en el prompt de análisis.
+        
+    Example:
+        >>> competitors = [
+        ...     {'url': 'https://example.com', 'title': 'Test', 'content': 'Content...', 'scrape_success': True}
+        ... ]
+        >>> formatted = format_competitors_for_prompt(competitors)
+        >>> len(formatted)
+        1
+        
+    Notes:
+        - Filtra competidores sin contenido válido
+        - Limita contenido a 3000 caracteres por competidor
+        - Máximo 5 competidores procesados
+    """
+    if not competitors_data:
+        return []
+    
+    formatted = []
+    
+    for comp in competitors_data[:5]:  # Máximo 5 competidores
+        # Solo incluir si tiene contenido válido
+        if not comp.get('scrape_success', False) and not comp.get('content'):
+            continue
+        
+        formatted_comp = {
+            'url': comp.get('url', 'N/A'),
+            'title': comp.get('title', 'Sin título'),
+            'content': clean_content_for_analysis(comp.get('content', ''))
+        }
+        
+        # Solo añadir si tiene contenido
+        if formatted_comp['content'] and len(formatted_comp['content']) > 50:
+            formatted.append(formatted_comp)
+    
+    return formatted
+
+
+def format_competitor_data_for_analysis(competitors: List[Dict]) -> List[Dict[str, str]]:
+    """
+    Formatea los datos de competidores para el análisis.
+    
+    Alias de format_competitors_for_prompt para compatibilidad.
+    
+    Args:
+        competitors: Lista de dicts con datos scrapeados de competidores
+        
+    Returns:
+        Lista de dicts formateados con 'url', 'title', 'content'
+    """
+    return format_competitors_for_prompt(competitors)
+
+
+def clean_content_for_analysis(content: str, max_chars: int = 3000) -> str:
+    """
+    Limpia contenido HTML para análisis, removiendo tags y limitando longitud.
+    
+    Args:
+        content: Contenido HTML a limpiar
+        max_chars: Número máximo de caracteres a retornar
+        
+    Returns:
+        str: Contenido limpio y truncado
+        
+    Notes:
+        - Remueve todos los tags HTML
+        - Normaliza espacios en blanco
+        - Trunca a max_chars si es más largo
+    """
+    if not content:
+        return "No se pudo extraer contenido"
+    
+    # Remover tags HTML básicos
+    clean = re.sub(r'<[^>]+>', '', content)
+    
+    # Normalizar espacios
+    clean = ' '.join(clean.split())
+    
+    # Truncar si es necesario
+    if len(clean) > max_chars:
+        clean = clean[:max_chars] + "...[truncado]"
+    
+    return clean
 
 
 # ============================================================================
@@ -936,72 +1044,8 @@ NO incluyas explicaciones, comentarios ni bloques de código markdown.
 
 
 # ============================================================================
-# FUNCIONES AUXILIARES
+# FUNCIONES AUXILIARES ADICIONALES
 # ============================================================================
-
-def format_competitor_data_for_analysis(competitors: List[Dict]) -> List[Dict[str, str]]:
-    """
-    Formatea los datos de competidores para el análisis.
-    
-    Limpia y estructura los datos scrapeados de URLs competidoras para
-    que sean más fáciles de procesar en el prompt de análisis.
-    
-    Args:
-        competitors: Lista de dicts con datos scrapeados de competidores
-        
-    Returns:
-        Lista de dicts formateados con 'url', 'title', 'content'
-        
-    Notes:
-        - Limita contenido a 3000 caracteres por competidor
-        - Elimina HTML tags del contenido
-        - Maneja casos donde el scraping falló
-    """
-    formatted = []
-    
-    for comp in competitors[:5]:  # Máximo 5 competidores
-        formatted_comp = {
-            'url': comp.get('url', 'N/A'),
-            'title': comp.get('title', 'Sin título'),
-            'content': clean_content_for_analysis(comp.get('content', ''))
-        }
-        formatted.append(formatted_comp)
-    
-    return formatted
-
-
-def clean_content_for_analysis(content: str, max_chars: int = 3000) -> str:
-    """
-    Limpia contenido HTML para análisis, removiendo tags y limitando longitud.
-    
-    Args:
-        content: Contenido HTML a limpiar
-        max_chars: Número máximo de caracteres a retornar
-        
-    Returns:
-        str: Contenido limpio y truncado
-        
-    Notes:
-        - Remueve todos los tags HTML
-        - Normaliza espacios en blanco
-        - Trunca a max_chars si es más largo
-    """
-    if not content:
-        return "No se pudo extraer contenido"
-    
-    # Remover tags HTML básicos (simplificado)
-    import re
-    clean = re.sub(r'<[^>]+>', '', content)
-    
-    # Normalizar espacios
-    clean = ' '.join(clean.split())
-    
-    # Truncar si es necesario
-    if len(clean) > max_chars:
-        clean = clean[:max_chars] + "...[truncado]"
-    
-    return clean
-
 
 def extract_gaps_from_analysis(analysis_json: str) -> List[str]:
     """
@@ -1020,12 +1064,86 @@ def extract_gaps_from_analysis(analysis_json: str) -> List[str]:
         - Extrae solo el campo 'gap' de cada elemento
     """
     try:
-        import json
         analysis = json.loads(analysis_json)
         gaps = analysis.get('gaps_identificados', [])
         return [gap.get('gap', '') for gap in gaps if gap.get('gap')]
-    except:
+    except (json.JSONDecodeError, TypeError, AttributeError):
         return []
+
+
+def validate_competitor_data(competitors_data: List[Dict]) -> List[Dict]:
+    """
+    Valida y filtra datos de competidores para asegurar calidad.
+    
+    Args:
+        competitors_data: Lista de dicts con datos de competidores
+        
+    Returns:
+        Lista filtrada con solo competidores válidos
+        
+    Notes:
+        - Filtra competidores sin URL
+        - Filtra competidores sin contenido scrapeado
+        - Limita a máximo 5 competidores
+    """
+    if not competitors_data:
+        return []
+    
+    valid_competitors = []
+    
+    for comp in competitors_data:
+        # Debe tener URL
+        if not comp.get('url'):
+            continue
+        
+        # Debe tener contenido o ser marcado como exitoso
+        has_content = bool(comp.get('content') and len(comp.get('content', '')) > 100)
+        is_success = comp.get('scrape_success', False)
+        
+        if has_content or is_success:
+            valid_competitors.append(comp)
+        
+        # Máximo 5 competidores
+        if len(valid_competitors) >= 5:
+            break
+    
+    return valid_competitors
+
+
+def get_competitor_summary(competitors_data: List[Dict]) -> Dict:
+    """
+    Genera un resumen estadístico de los competidores analizados.
+    
+    Args:
+        competitors_data: Lista de dicts con datos de competidores
+        
+    Returns:
+        Dict con estadísticas:
+        - total: número total de competidores
+        - scraped_ok: número con scraping exitoso
+        - avg_word_count: promedio de palabras
+        - min_word_count: mínimo de palabras
+        - max_word_count: máximo de palabras
+    """
+    if not competitors_data:
+        return {
+            'total': 0,
+            'scraped_ok': 0,
+            'avg_word_count': 0,
+            'min_word_count': 0,
+            'max_word_count': 0
+        }
+    
+    scraped = [c for c in competitors_data if c.get('scrape_success', False)]
+    word_counts = [c.get('word_count', 0) for c in scraped if c.get('word_count', 0) > 0]
+    
+    return {
+        'total': len(competitors_data),
+        'scraped_ok': len(scraped),
+        'avg_word_count': int(sum(word_counts) / len(word_counts)) if word_counts else 0,
+        'min_word_count': min(word_counts) if word_counts else 0,
+        'max_word_count': max(word_counts) if word_counts else 0
+    }
 
 
 # ============================================================================
@@ -1043,3 +1161,6 @@ MAX_COMPETITORS_ANALYZED = 5
 
 # Número de caracteres máximo por competidor en análisis
 MAX_COMPETITOR_CONTENT_CHARS = 3000
+
+# Número mínimo de caracteres para considerar contenido válido
+MIN_VALID_CONTENT_CHARS = 50
