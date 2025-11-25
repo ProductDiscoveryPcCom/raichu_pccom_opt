@@ -62,7 +62,7 @@ def load_gsc_data(csv_path: str = DEFAULT_GSC_CSV_PATH) -> Optional[pd.DataFrame
     
     try:
         # Cargar CSV
-        df = pd.read_csv(csv_path)
+        df = pd.read_csv(csv_path, sep=None, engine='python')
         
         # Validar columnas requeridas
         required_columns = ['page', 'query', 'clicks', 'impressions', 'ctr', 'position']
