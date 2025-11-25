@@ -107,6 +107,74 @@ def render_rewrite_section() -> Tuple[bool, Dict]:
                 Considera si realmente necesitas crear contenido nuevo o si deberías 
                 mejorar el contenido existente.
                 """)
+                
+    def render_keyword_potential_section(keyword: str, gsc_analysis: Optional[Dict]) -> Optional[Dict]:
+    """
+    Muestra métricas de potencial de la keyword.
+    """
+    
+    from config.settings import SEMRUSH_ENABLED
+    
+    if not SEMRUSH_ENABLED:
+        return None
+    
+    st.markdown("### 📊 Potencial de la Keyword")
+    
+    try:
+        from core.semrush import get_keyword_overview, calculate_keyword_potential
+        
+        with st.spinner("Analizando potencial con SEMrush..."):
+            semrush_data = {'metrics': get_keyword_overview(keyword)}
+            potential = calculate_keyword_potential(semrush_data, gsc_analysis)
+        
+        if potential.get('opportunity_score', 0) > 0:
+            # Mostrar métricas
+            col1, col2, col3, col4 = st.columns(4)
+            
+            with col1:
+                st.metric(
+                    "🔍 Volumen Mensual",
+                    f"{potential['details'].get('monthly_volume', 0):,}"
+                )
+            
+            with col2:
+                st.metric(
+                    "📈 Tráfico Potencial",
+                    f"{potential['traffic_potential']:,}/mes"
+                )
+            
+            with col3:
+                difficulty = potential.get('difficulty', 'unknown')
+                from core.semrush import DIFFICULTY_LABELS
+                st.metric(
+                    "💪 Dificultad",
+                    DIFFICULTY_LABELS.get(difficulty, difficulty)
+                )
+            
+            with col4:
+                st.metric(
+                    "🎯 Oportunidad",
+                    f"{potential['opportunity_score']}/100"
+                )
+            
+            # Recomendación
+            st.info(potential.get('recommendation_text', ''))
+            
+            # Si ya rankeamos, mostrar crecimiento potencial
+            if gsc_analysis and gsc_analysis.get('has_matches'):
+                st.markdown(f"""
+                **Tu situación actual:**
+                - Posición actual: #{potential.get('current_position', 'N/A')}
+                - Tráfico actual: {potential.get('current_traffic', 0):,} clics/mes
+                - **Potencial de crecimiento**: +{potential.get('growth_potential', 0):,} clics/mes si llegas a #1
+                """)
+            
+            return potential
+        
+    except Exception as e:
+        st.warning(f"⚠️ No se pudo analizar potencial: {str(e)}")
+    
+    return None
     
     # Si hay que hacer búsqueda de competidores, ejecutar
     if should_search and keyword:
