@@ -1,103 +1,288 @@
 """
-Gestión centralizada del estado de Streamlit
+State Manager - PcComponentes Content Generator
+Versión 4.1.1
+
+Utilidades para gestionar el estado de la sesión en Streamlit.
+
+Autor: PcComponentes - Product Discovery & Content
 """
+
 import streamlit as st
-from dataclasses import dataclass, asdict
-from typing import Optional, List, Dict, Any
-import json
-
-@dataclass
-class CompetitorData:
-    """Datos de un competidor scrapeado"""
-    url: str
-    title: Optional[str] = None
-    word_count: Optional[int] = None
-    headings: List[dict] = None
-    paragraphs: List[str] = None
-    scraped: bool = False
-    error: Optional[str] = None
-    
-    def to_dict(self) -> dict:
-        return asdict(self)
+from typing import Any, Dict, Optional
+from datetime import datetime
 
 
-@dataclass
-class GenerationMetadata:
-    """Metadata de una generación"""
-    product_id: str
-    arquetipo: str
-    objetivo: str
-    keyword_principal: str
-    keywords_secundarias: str
-    longitud_objetivo: int
-    longitud_real: int
-    timestamp: str
-    campos_arquetipo: Dict = None
+# ============================================================================
+# INICIALIZACIÓN DE SESSION STATE
+# ============================================================================
+
+def initialize_session_state() -> None:
+    """
+    Inicializa todas las variables de session state necesarias.
     
-    def to_dict(self) -> dict:
-        return asdict(self)
+    Notes:
+        - Se ejecuta una sola vez al inicio de la app
+        - Define valores por defecto para todas las variables
+        - Previene KeyError en accesos posteriores
+    """
+    
+    # Modo actual (new o rewrite)
+    if 'current_mode' not in st.session_state:
+        st.session_state.current_mode = 'new'
+    
+    # Estado de generación
+    if 'generation_in_progress' not in st.session_state:
+        st.session_state.generation_in_progress = False
+    
+    if 'current_stage' not in st.session_state:
+        st.session_state.current_stage = 0
+    
+    # Resultados de cada etapa
+    if 'draft_html' not in st.session_state:
+        st.session_state.draft_html = None
+    
+    if 'analysis_json' not in st.session_state:
+        st.session_state.analysis_json = None
+    
+    if 'final_html' not in st.session_state:
+        st.session_state.final_html = None
+    
+    # Configuración de generación
+    if 'target_length' not in st.session_state:
+        st.session_state.target_length = 1500
+    
+    if 'generation_config' not in st.session_state:
+        st.session_state.generation_config = {}
+    
+    # Datos de producto scrapeado
+    if 'scraped_pdp_data' not in st.session_state:
+        st.session_state.scraped_pdp_data = None
+    
+    # Modo rewrite específico
+    if 'rewrite_competitors_data' not in st.session_state:
+        st.session_state.rewrite_competitors_data = None
+    
+    if 'rewrite_analysis' not in st.session_state:
+        st.session_state.rewrite_analysis = None
+    
+    if 'rewrite_gsc_analysis' not in st.session_state:
+        st.session_state.rewrite_gsc_analysis = None
+    
+    if 'last_rewrite_keyword' not in st.session_state:
+        st.session_state.last_rewrite_keyword = ''
+    
+    # Análisis GSC
+    if 'gsc_analysis' not in st.session_state:
+        st.session_state.gsc_analysis = None
+    
+    # Metadata de generación
+    if 'generation_metadata' not in st.session_state:
+        st.session_state.generation_metadata = {}
 
 
-class StateManager:
-    """Gestor centralizado del estado de la aplicación"""
+# ============================================================================
+# LIMPIEZA DE ESTADO
+# ============================================================================
+
+def clear_generation_state() -> None:
+    """
+    Limpia el estado relacionado con la generación actual.
     
-    @staticmethod
-    def get_competitor(index: int) -> Optional[CompetitorData]:
-        """Obtiene datos de un competidor"""
-        key = f'competitor_{index}_data'
-        if key in st.session_state:
-            data = st.session_state[key]
-            return CompetitorData(**data) if isinstance(data, dict) else data
-        return None
+    Notes:
+        - Mantiene configuración general de la app
+        - Limpia solo resultados de generación
+        - Útil al cambiar de modo o iniciar nueva generación
+    """
     
-    @staticmethod
-    def set_competitor(index: int, data: CompetitorData):
-        """Guarda datos de un competidor"""
-        st.session_state[f'competitor_{index}_data'] = data.to_dict()
+    st.session_state.generation_in_progress = False
+    st.session_state.current_stage = 0
+    st.session_state.draft_html = None
+    st.session_state.analysis_json = None
+    st.session_state.final_html = None
+    st.session_state.generation_config = {}
+    st.session_state.generation_metadata = {}
+
+
+def clear_all_state() -> None:
+    """
+    Limpia TODO el estado de la sesión.
     
-    @staticmethod
-    def get_all_competitors() -> List[CompetitorData]:
-        """Obtiene todos los competidores"""
-        competitors = []
-        for i in range(3):
-            comp = StateManager.get_competitor(i)
-            if comp:
-                competitors.append(comp)
-        return competitors
+    Notes:
+        - Útil para "empezar de cero"
+        - Ejecutar solo cuando el usuario lo solicita explícitamente
+    """
     
-    @staticmethod
-    def clear_competitors():
-        """Limpia datos de competidores"""
-        for i in range(3):
-            key = f'competitor_{i}_data'
-            if key in st.session_state:
-                del st.session_state[key]
+    # Obtener todas las keys actuales
+    keys_to_delete = list(st.session_state.keys())
     
-    @staticmethod
-    def get_gsc_results() -> Optional[dict]:
-        """Obtiene resultados de GSC"""
-        return st.session_state.get('gsc_check_results')
+    # Eliminar todas
+    for key in keys_to_delete:
+        del st.session_state[key]
     
-    @staticmethod
-    def set_gsc_results(results: dict):
-        """Guarda resultados de GSC"""
-        st.session_state['gsc_check_results'] = results
+    # Re-inicializar
+    initialize_session_state()
+
+
+def clear_mode_specific_state(mode: str) -> None:
+    """
+    Limpia estado específico de un modo (new o rewrite).
     
-    @staticmethod
-    def get_generation_results() -> Optional[dict]:
-        """Obtiene resultados de generación"""
-        return st.session_state.get('results')
+    Args:
+        mode: 'new' o 'rewrite'
+        
+    Notes:
+        - Útil al cambiar entre modos
+        - Mantiene estado general de la app
+    """
     
-    @staticmethod
-    def set_generation_results(results: dict):
-        """Guarda resultados de generación"""
-        st.session_state['results'] = results
+    if mode == 'rewrite':
+        st.session_state.rewrite_competitors_data = None
+        st.session_state.rewrite_analysis = None
+        st.session_state.rewrite_gsc_analysis = None
+        st.session_state.last_rewrite_keyword = ''
     
-    @staticmethod
-    def clear_generation():
-        """Limpia resultados de generación"""
-        keys_to_clear = ['gsc_check_results', 'last_checked_keyword', 
-                         'confirm_new_content', 'results']
-        for key in keys_to_clear:
-            if key in st.session_state:
-                del st.session_state[key]
+    elif mode == 'new':
+        st.session_state.scraped_pdp_data = None
+        st.session_state.gsc_analysis = None
+    
+    # Siempre limpiar resultados de generación
+    clear_generation_state()
+
+
+# ============================================================================
+# GUARDADO DE DATOS
+# ============================================================================
+
+def save_generation_to_state(
+    stage: int,
+    content: str,
+    metadata: Optional[Dict] = None
+) -> None:
+    """
+    Guarda el resultado de una etapa de generación en session state.
+    
+    Args:
+        stage: Número de etapa (1, 2 o 3)
+        content: Contenido generado (HTML o JSON)
+        metadata: Metadata adicional opcional
+        
+    Notes:
+        - Etapa 1: Borrador HTML
+        - Etapa 2: Análisis JSON
+        - Etapa 3: HTML final
+    """
+    
+    # Guardar contenido según etapa
+    if stage == 1:
+        st.session_state.draft_html = content
+    elif stage == 2:
+        st.session_state.analysis_json = content
+    elif stage == 3:
+        st.session_state.final_html = content
+    
+    # Actualizar stage actual
+    st.session_state.current_stage = max(st.session_state.current_stage, stage)
+    
+    # Guardar metadata si se proporciona
+    if metadata:
+        if 'stages' not in st.session_state.generation_metadata:
+            st.session_state.generation_metadata['stages'] = {}
+        
+        st.session_state.generation_metadata['stages'][stage] = {
+            'timestamp': datetime.now().isoformat(),
+            **metadata
+        }
+
+
+def save_config_to_state(config: Dict) -> None:
+    """
+    Guarda la configuración de generación en session state.
+    
+    Args:
+        config: Dict con la configuración completa
+    """
+    
+    st.session_state.generation_config = config
+    st.session_state.target_length = config.get('target_length', 1500)
+    
+    # Guardar metadata
+    st.session_state.generation_metadata = {
+        'mode': config.get('mode', 'new'),
+        'arquetipo': config.get('arquetipo_codigo'),
+        'keyword': config.get('keywords', [''])[0] if config.get('keywords') else '',
+        'started_at': datetime.now().isoformat()
+    }
+
+
+# ============================================================================
+# HELPERS
+# ============================================================================
+
+def get_generation_progress() -> Dict[str, Any]:
+    """
+    Obtiene el progreso actual de la generación.
+    
+    Returns:
+        Dict con información del progreso:
+        - current_stage: Etapa actual (0-3)
+        - has_draft: bool
+        - has_analysis: bool
+        - has_final: bool
+        - is_complete: bool
+    """
+    
+    return {
+        'current_stage': st.session_state.get('current_stage', 0),
+        'has_draft': st.session_state.get('draft_html') is not None,
+        'has_analysis': st.session_state.get('analysis_json') is not None,
+        'has_final': st.session_state.get('final_html') is not None,
+        'is_complete': st.session_state.get('current_stage', 0) >= 3,
+        'in_progress': st.session_state.get('generation_in_progress', False)
+    }
+
+
+def has_any_results() -> bool:
+    """
+    Verifica si hay algún resultado de generación guardado.
+    
+    Returns:
+        bool: True si hay al menos un resultado
+    """
+    
+    return (
+        st.session_state.get('draft_html') is not None or
+        st.session_state.get('analysis_json') is not None or
+        st.session_state.get('final_html') is not None
+    )
+
+
+def get_all_results() -> Dict[str, Optional[str]]:
+    """
+    Obtiene todos los resultados de generación.
+    
+    Returns:
+        Dict con draft, analysis y final (pueden ser None)
+    """
+    
+    return {
+        'draft': st.session_state.get('draft_html'),
+        'analysis': st.session_state.get('analysis_json'),
+        'final': st.session_state.get('final_html')
+    }
+
+
+# ============================================================================
+# CONSTANTES
+# ============================================================================
+
+# Versión del módulo
+__version__ = "4.1.1"
+
+# Etapas de generación
+STAGE_DRAFT = 1
+STAGE_ANALYSIS = 2
+STAGE_FINAL = 3
+
+# Modos de generación
+MODE_NEW = 'new'
+MODE_REWRITE = 'rewrite'
