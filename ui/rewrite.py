@@ -1,15 +1,19 @@
 """
 UI de Reescritura - PcComponentes Content Generator
-Versión 4.1.1
+Versión 4.2.0
 
 Este módulo maneja la interfaz de usuario para el modo REESCRITURA,
 que analiza contenido competidor y genera una versión mejorada.
-Incluye verificación GSC para evitar canibalización.
+
+Incluye:
+- Integración con SEMrush API para datos reales de competidores
+- Fallback a entrada manual si SEMrush no está disponible
+- Verificación GSC para evitar canibalización
 
 Flujo:
 1. Input de keyword principal
-2. Verificación GSC (nuevo)
-3. Scraping automático de top 5 URLs competidoras
+2. Verificación GSC (opcional)
+3. Obtención de competidores (SEMrush API o manual)
 4. Análisis competitivo de contenido
 5. Configuración de parámetros adicionales
 6. Generación del contenido mejorado en 3 etapas
@@ -20,15 +24,37 @@ Autor: PcComponentes - Product Discovery & Content
 import streamlit as st
 from typing import Dict, List, Optional, Tuple
 import json
+from datetime import datetime
 
 # Importar utilidades
 from utils.html_utils import count_words_in_html
 
 # Importar configuración
-from config.settings import GSC_VERIFICATION_ENABLED
+from config.settings import (
+    GSC_VERIFICATION_ENABLED,
+    SEMRUSH_ENABLED,
+    SEMRUSH_API_KEY
+)
 
-# Importar sección GSC
-from ui.gsc_section import render_gsc_verification_section
+# Importar sección GSC (con manejo de errores)
+try:
+    from ui.gsc_section import render_gsc_verification_section
+    GSC_AVAILABLE = True
+except ImportError:
+    GSC_AVAILABLE = False
+
+# Importar cliente SEMrush
+try:
+    from core.semrush import (
+        SEMrushClient,
+        SEMrushResponse,
+        CompetitorData,
+        format_competitors_for_display,
+        is_semrush_available
+    )
+    SEMRUSH_MODULE_AVAILABLE = True
+except ImportError:
+    SEMRUSH_MODULE_AVAILABLE = False
 
 
 # ============================================================================
@@ -42,7 +68,7 @@ def render_rewrite_section() -> Tuple[bool, Dict]:
     Esta función gestiona toda la interfaz del modo reescritura, incluyendo:
     - Input de keyword y configuración
     - Verificación GSC
-    - Scraping de URLs competidoras
+    - Obtención de competidores (SEMrush o manual)
     - Análisis competitivo
     - Configuración de parámetros de generación
     - Botón de inicio de generación
@@ -51,36 +77,39 @@ def render_rewrite_section() -> Tuple[bool, Dict]:
         Tuple[bool, Dict]: (debe_generar, config_dict)
         - debe_generar: True si el usuario quiere iniciar la generación
         - config_dict: Diccionario con toda la configuración necesaria
-        
-    Notes:
-        - Usa st.session_state para mantener estado entre reruns
-        - El scraping de competidores se hace automáticamente
-        - Valida inputs antes de permitir generación
-        - Incluye verificación GSC antes del scraping
     """
     
     st.markdown("## 🔄 Modo: Reescritura Competitiva")
     
-    st.info("""
-    **¿Qué hace el modo reescritura?**
+    # Determinar método de obtención de competidores
+    semrush_available = SEMRUSH_MODULE_AVAILABLE and is_semrush_available()
     
-    1. 🔍 Verifica si ya rankeas para esta keyword (GSC)
-    2. 🔍 Analiza el contenido de los **top 5 resultados** que rankean para tu keyword
-    3. 📊 Identifica **gaps de contenido** y oportunidades de mejora
-    4. ✍️ Genera contenido **superior** que cubre todos los gaps
-    5. 🎯 Te ayuda a **superar a la competencia** en Google
-    
-    Perfecto para: mejorar artículos existentes, crear contenido para keywords competitivas,
-    superar contenido de competidores.
-    """)
+    # Info box según disponibilidad
+    if semrush_available:
+        st.success("""
+        **✅ SEMrush API Conectada**
+        
+        1. 🔍 Verifica si ya rankeas para esta keyword (GSC)
+        2. 📊 Obtiene los **top 5 resultados reales** de Google vía SEMrush
+        3. 🔍 Scrapea y analiza el contenido de cada competidor
+        4. 📈 Identifica **gaps de contenido** y oportunidades
+        5. ✍️ Genera contenido **superior** que cubre todos los gaps
+        """)
+    else:
+        st.info("""
+        **📝 Modo Manual** (SEMrush no configurado)
+        
+        1. 🔍 Verifica si ya rankeas para esta keyword (GSC)
+        2. ✏️ Introduce manualmente las URLs de competidores a analizar
+        3. 🔍 Scrapea y analiza el contenido de cada URL
+        4. 📈 Identifica **gaps de contenido** y oportunidades
+        5. ✍️ Genera contenido **superior** que cubre todos los gaps
+        
+        💡 **Tip**: Configura SEMrush API en Settings para obtener competidores automáticamente.
+        """)
     
     # Inicializar estado si no existe
-    if 'rewrite_competitors_data' not in st.session_state:
-        st.session_state.rewrite_competitors_data = None
-    if 'rewrite_analysis' not in st.session_state:
-        st.session_state.rewrite_analysis = None
-    if 'rewrite_gsc_analysis' not in st.session_state:
-        st.session_state.rewrite_gsc_analysis = None
+    _initialize_rewrite_state()
     
     # Paso 1: Keyword y verificación GSC
     st.markdown("---")
@@ -90,7 +119,7 @@ def render_rewrite_section() -> Tuple[bool, Dict]:
     
     # Verificación GSC (si está habilitada y hay keyword)
     gsc_analysis = None
-    if GSC_VERIFICATION_ENABLED and keyword and len(keyword.strip()) >= 3:
+    if GSC_VERIFICATION_ENABLED and GSC_AVAILABLE and keyword and len(keyword.strip()) >= 3:
         st.markdown("---")
         gsc_analysis = render_gsc_verification_section(
             keyword=keyword,
@@ -107,97 +136,26 @@ def render_rewrite_section() -> Tuple[bool, Dict]:
                 Considera si realmente necesitas crear contenido nuevo o si deberías 
                 mejorar el contenido existente.
                 """)
-                
-    def render_keyword_potential_section(keyword: str, gsc_analysis: Optional[Dict]) -> Optional[Dict]:
-    """
-    Muestra métricas de potencial de la keyword.
-    """
     
-    from config.settings import SEMRUSH_ENABLED
+    # Paso 2: Obtener competidores
+    st.markdown("---")
+    st.markdown("### 🏆 Paso 2: Análisis de Competidores")
     
-    if not SEMRUSH_ENABLED:
-        return None
-    
-    st.markdown("### 📊 Potencial de la Keyword")
-    
-    try:
-        from core.semrush import get_keyword_overview, calculate_keyword_potential
-        
-        with st.spinner("Analizando potencial con SEMrush..."):
-            semrush_data = {'metrics': get_keyword_overview(keyword)}
-            potential = calculate_keyword_potential(semrush_data, gsc_analysis)
-        
-        if potential.get('opportunity_score', 0) > 0:
-            # Mostrar métricas
-            col1, col2, col3, col4 = st.columns(4)
-            
-            with col1:
-                st.metric(
-                    "🔍 Volumen Mensual",
-                    f"{potential['details'].get('monthly_volume', 0):,}"
-                )
-            
-            with col2:
-                st.metric(
-                    "📈 Tráfico Potencial",
-                    f"{potential['traffic_potential']:,}/mes"
-                )
-            
-            with col3:
-                difficulty = potential.get('difficulty', 'unknown')
-                from core.semrush import DIFFICULTY_LABELS
-                st.metric(
-                    "💪 Dificultad",
-                    DIFFICULTY_LABELS.get(difficulty, difficulty)
-                )
-            
-            with col4:
-                st.metric(
-                    "🎯 Oportunidad",
-                    f"{potential['opportunity_score']}/100"
-                )
-            
-            # Recomendación
-            st.info(potential.get('recommendation_text', ''))
-            
-            # Si ya rankeamos, mostrar crecimiento potencial
-            if gsc_analysis and gsc_analysis.get('has_matches'):
-                st.markdown(f"""
-                **Tu situación actual:**
-                - Posición actual: #{potential.get('current_position', 'N/A')}
-                - Tráfico actual: {potential.get('current_traffic', 0):,} clics/mes
-                - **Potencial de crecimiento**: +{potential.get('growth_potential', 0):,} clics/mes si llegas a #1
-                """)
-            
-            return potential
-        
-    except Exception as e:
-        st.warning(f"⚠️ No se pudo analizar potencial: {str(e)}")
-    
-    return None
-    
-    # Si hay que hacer búsqueda de competidores, ejecutar
-    if should_search and keyword:
-        # Advertencia final antes de scrapear
-        if gsc_analysis and gsc_analysis.get('has_matches'):
-            st.info("💡 Procederemos a analizar competidores. Recuerda que ya tienes contenido rankeando.")
-        
-        with st.spinner("🔍 Buscando y analizando competidores..."):
-            competitors_data = fetch_competitors_content(keyword)
-            st.session_state.rewrite_competitors_data = competitors_data
-            
-            if competitors_data:
-                st.success(f"✅ Se analizaron {len(competitors_data)} competidores")
-                st.rerun()
+    if semrush_available:
+        # Modo SEMrush automático
+        if should_search and keyword:
+            _fetch_competitors_semrush(keyword, gsc_analysis)
+    else:
+        # Modo manual
+        render_manual_competitors_input(keyword)
     
     # Mostrar competidores si existen
     if st.session_state.rewrite_competitors_data:
-        st.markdown("---")
         render_competitors_summary(st.session_state.rewrite_competitors_data)
     
-    # Paso 2: Configuración de parámetros
+    # Paso 3: Configuración de parámetros
     st.markdown("---")
-    st.markdown("### ⚙️ Paso 2: Configuración del Contenido")
+    st.markdown("### ⚙️ Paso 3: Configuración del Contenido")
     
     rewrite_config = render_rewrite_configuration(keyword)
     
@@ -242,6 +200,27 @@ def render_rewrite_section() -> Tuple[bool, Dict]:
 
 
 # ============================================================================
+# INICIALIZACIÓN DE ESTADO
+# ============================================================================
+
+def _initialize_rewrite_state() -> None:
+    """Inicializa variables de estado para el modo rewrite."""
+    
+    if 'rewrite_competitors_data' not in st.session_state:
+        st.session_state.rewrite_competitors_data = None
+    if 'rewrite_analysis' not in st.session_state:
+        st.session_state.rewrite_analysis = None
+    if 'rewrite_gsc_analysis' not in st.session_state:
+        st.session_state.rewrite_gsc_analysis = None
+    if 'last_rewrite_keyword' not in st.session_state:
+        st.session_state.last_rewrite_keyword = ''
+    if 'manual_urls_input' not in st.session_state:
+        st.session_state.manual_urls_input = ''
+    if 'semrush_response' not in st.session_state:
+        st.session_state.semrush_response = None
+
+
+# ============================================================================
 # INPUT DE KEYWORD Y BÚSQUEDA
 # ============================================================================
 
@@ -251,19 +230,14 @@ def render_keyword_input() -> Tuple[str, bool]:
     
     Returns:
         Tuple[str, bool]: (keyword, should_search)
-        - keyword: Keyword introducida por el usuario
-        - should_search: True si se debe ejecutar la búsqueda
-        
-    Notes:
-        - Valida que la keyword no esté vacía
-        - Detecta cambios en la keyword para limpiar datos previos
-        - Sugiere keywords específicas para mejores resultados
     """
     
     st.markdown("""
     Introduce la **keyword principal** para la que quieres rankear.
-    Buscaremos automáticamente los top 5 resultados y los analizaremos.
     """)
+    
+    # Determinar si SEMrush está disponible
+    semrush_available = SEMRUSH_MODULE_AVAILABLE and is_semrush_available()
     
     col1, col2 = st.columns([3, 1])
     
@@ -276,14 +250,18 @@ def render_keyword_input() -> Tuple[str, bool]:
         )
     
     with col2:
-        # Botón de búsqueda
-        search_disabled = not current_keyword or len(current_keyword.strip()) < 3
-        search_button = st.button(
-            "🔍 Buscar Competidores",
-            disabled=search_disabled,
-            use_container_width=True,
-            type="primary"
-        )
+        # Botón de búsqueda (solo si hay SEMrush)
+        if semrush_available:
+            search_disabled = not current_keyword or len(current_keyword.strip()) < 3
+            search_button = st.button(
+                "🔍 Buscar Competidores",
+                disabled=search_disabled,
+                use_container_width=True,
+                type="primary"
+            )
+        else:
+            search_button = False
+            st.caption("💡 Introduce URLs manualmente abajo")
     
     # Detectar si cambió la keyword para limpiar datos
     if 'last_rewrite_keyword' in st.session_state:
@@ -292,6 +270,7 @@ def render_keyword_input() -> Tuple[str, bool]:
             st.session_state.rewrite_competitors_data = None
             st.session_state.rewrite_analysis = None
             st.session_state.rewrite_gsc_analysis = None
+            st.session_state.semrush_response = None
     
     st.session_state.last_rewrite_keyword = current_keyword
     
@@ -309,102 +288,267 @@ def render_keyword_input() -> Tuple[str, bool]:
         - "portátil para edición de vídeo 2025"
         - "diferencias rtx 4070 vs 4080"
         - "cómo elegir monitor gaming"
-        
-        **⚠️ Importante:**
-        - Verifica primero en GSC si ya rankeas para esta keyword
-        - Evita canibalización creando contenido duplicado
         """)
     
     return current_keyword, search_button
 
 
 # ============================================================================
-# SCRAPING DE COMPETIDORES
+# OBTENCIÓN DE COMPETIDORES - SEMRUSH
 # ============================================================================
 
-def fetch_competitors_content(keyword: str) -> Optional[List[Dict]]:
+def _fetch_competitors_semrush(keyword: str, gsc_analysis: Optional[Dict]) -> None:
     """
-    Obtiene y analiza el contenido de los top 5 competidores para una keyword.
-    Usa SEMrush API para obtener URLs reales y luego scrapea el contenido.
+    Obtiene competidores usando SEMrush API.
+    
+    Args:
+        keyword: Keyword a buscar
+        gsc_analysis: Análisis de GSC (para advertencias)
     """
     
-    from config.settings import SEMRUSH_ENABLED
+    # Advertencia si ya rankea
+    if gsc_analysis and gsc_analysis.get('has_matches'):
+        st.info("💡 Procederemos a analizar competidores. Recuerda que ya tienes contenido rankeando.")
     
-    # Si SEMrush está habilitado, usar datos reales
-    if SEMRUSH_ENABLED:
+    with st.spinner("🔍 Consultando SEMrush y analizando competidores..."):
         try:
-            from core.semrush import fetch_competitors_with_content, get_keyword_overview
+            # Obtener cliente SEMrush
+            client = SEMrushClient(
+                api_key=SEMRUSH_API_KEY,
+                database='es'  # España
+            )
             
-            # Obtener datos de SEMrush
-            analysis, competitors = fetch_competitors_with_content(keyword)
+            # Consultar API
+            response = client.get_organic_competitors(
+                keyword=keyword,
+                num_results=5,
+                scrape_content=True,
+                exclude_domains=['pccomponentes.com', 'pccomponentes.pt']
+            )
             
-            if competitors:
-                # Guardar análisis de keyword en session state
-                st.session_state['semrush_keyword_data'] = analysis
-                return competitors
-            else:
-                st.warning("⚠️ No se encontraron resultados en SEMrush para esta keyword.")
+            # Guardar respuesta completa
+            st.session_state.semrush_response = response
+            
+            if response.success and response.competitors:
+                # Formatear para uso en la app
+                competitors_data = format_competitors_for_display(response.competitors)
+                st.session_state.rewrite_competitors_data = competitors_data
                 
+                # Métricas de éxito
+                scraped_ok = sum(1 for c in competitors_data if c.get('scrape_success', False))
+                
+                st.success(f"""
+                ✅ **SEMrush**: {len(competitors_data)} competidores encontrados
+                
+                📊 Contenido scrapeado: {scraped_ok}/{len(competitors_data)} URLs
+                """)
+            else:
+                # Error de SEMrush
+                st.error(f"""
+                ❌ **Error de SEMrush**: {response.error_message}
+                
+                Puedes introducir las URLs manualmente abajo.
+                """)
+                
+                # Mostrar opción manual como fallback
+                _show_manual_fallback()
+        
         except Exception as e:
-            st.error(f"❌ Error con SEMrush API: {str(e)}")
+            st.error(f"""
+            ❌ **Error inesperado**: {str(e)}
+            
+            Puedes introducir las URLs manualmente abajo.
+            """)
+            _show_manual_fallback()
+        
+        st.rerun()
+
+
+def _show_manual_fallback() -> None:
+    """Muestra la opción de entrada manual como fallback."""
+    st.session_state['show_manual_fallback'] = True
+
+
+# ============================================================================
+# OBTENCIÓN DE COMPETIDORES - MANUAL
+# ============================================================================
+
+def render_manual_competitors_input(keyword: str) -> None:
+    """
+    Renderiza el input manual para URLs de competidores.
     
-    # Fallback: mostrar mensaje de que no hay API configurada
-    st.warning("""
-    ⚠️ **SEMrush API no configurada**
+    Args:
+        keyword: Keyword principal (para contexto)
+    """
     
-    Para obtener datos reales de competidores, configura tu API key de SEMrush:
+    st.markdown("""
+    **Introduce las URLs de los competidores** que quieres analizar.
     
-    1. Obtén tu API key en [SEMrush](https://www.semrush.com/api/)
-    2. Añádela en Settings > Secrets:
-```
-    SEMRUSH_API_KEY = "tu-api-key"
-```
-    
-    Mientras tanto, puedes introducir URLs de competidores manualmente.
+    💡 **Tip**: Busca tu keyword en Google y copia las URLs de los primeros resultados.
     """)
     
-    # Opción manual: input de URLs
-    return render_manual_competitor_input(keyword)
-
-
-def render_manual_competitor_input(keyword: str) -> Optional[List[Dict]]:
-    """
-    Permite al usuario introducir URLs de competidores manualmente.
-    """
-    
-    st.markdown("#### 📝 Introducir URLs manualmente")
-    
+    # Text area para URLs
     urls_input = st.text_area(
-        "URLs de competidores (una por línea)",
-        placeholder="https://competidor1.com/articulo\nhttps://competidor2.com/guia\n...",
-        height=150
+        "URLs de competidores (una por línea) *",
+        value=st.session_state.get('manual_urls_input', ''),
+        placeholder="""https://competitor1.com/article
+https://competitor2.com/guide
+https://competitor3.com/review""",
+        height=150,
+        help="Introduce las URLs de los competidores que rankean para tu keyword"
     )
     
-    if st.button("🔍 Scrapear URLs", disabled=not urls_input):
-        urls = [u.strip() for u in urls_input.split('\n') if u.strip().startswith('http')]
-        
-        if not urls:
-            st.error("❌ No se encontraron URLs válidas")
-            return None
-        
-        competitors = []
-        
-        for i, url in enumerate(urls[:5], 1):
-            with st.spinner(f"Scrapeando {i}/{len(urls[:5])}: {url[:50]}..."):
-                from core.semrush import scrape_competitor_content
-                content_data = scrape_competitor_content(url)
-                
-                if content_data:
-                    content_data['ranking_position'] = i
-                    competitors.append(content_data)
-        
-        if competitors:
-            st.success(f"✅ Se scrapearon {len(competitors)} competidores")
-            return competitors
-        else:
-            st.error("❌ No se pudo scrapear ninguna URL")
+    st.session_state.manual_urls_input = urls_input
     
-    return None
+    # Botón para analizar
+    col1, col2 = st.columns([1, 3])
+    
+    with col1:
+        analyze_btn = st.button(
+            "🔍 Analizar URLs",
+            disabled=not urls_input.strip(),
+            type="primary"
+        )
+    
+    with col2:
+        if urls_input:
+            urls = [u.strip() for u in urls_input.split('\n') if u.strip() and u.startswith('http')]
+            st.caption(f"📋 {len(urls)} URLs detectadas")
+    
+    if analyze_btn and urls_input:
+        _scrape_manual_urls(urls_input, keyword)
+
+
+def _scrape_manual_urls(urls_input: str, keyword: str) -> None:
+    """
+    Scrapea las URLs introducidas manualmente.
+    
+    Args:
+        urls_input: Texto con URLs separadas por líneas
+        keyword: Keyword principal
+    """
+    
+    # Parsear URLs
+    urls = [u.strip() for u in urls_input.split('\n') if u.strip() and u.startswith('http')]
+    
+    if not urls:
+        st.error("❌ No se encontraron URLs válidas. Asegúrate de que empiecen con http:// o https://")
+        return
+    
+    if len(urls) > 10:
+        st.warning("⚠️ Máximo 10 URLs. Solo se procesarán las primeras 10.")
+        urls = urls[:10]
+    
+    with st.spinner(f"🔍 Analizando {len(urls)} URLs..."):
+        competitors_data = []
+        
+        for i, url in enumerate(urls, 1):
+            try:
+                # Scrape de contenido
+                content_data = _scrape_single_url(url, i)
+                competitors_data.append(content_data)
+                
+            except Exception as e:
+                competitors_data.append({
+                    'url': url,
+                    'title': 'Error al scrapear',
+                    'domain': _extract_domain(url),
+                    'position': i,
+                    'ranking_position': i,
+                    'content': '',
+                    'word_count': 0,
+                    'scrape_success': False,
+                    'error': str(e)[:100]
+                })
+        
+        # Guardar resultados
+        st.session_state.rewrite_competitors_data = competitors_data
+        
+        # Mostrar resumen
+        success_count = sum(1 for c in competitors_data if c.get('scrape_success', False))
+        
+        if success_count > 0:
+            st.success(f"✅ Contenido analizado: {success_count}/{len(competitors_data)} URLs")
+        else:
+            st.error("❌ No se pudo scrapear ninguna URL. Verifica que sean accesibles.")
+        
+        st.rerun()
+
+
+def _scrape_single_url(url: str, position: int) -> Dict:
+    """
+    Scrapea una URL individual.
+    
+    Args:
+        url: URL a scrapear
+        position: Posición en la lista
+        
+    Returns:
+        Dict con datos del competidor
+    """
+    import requests
+    from bs4 import BeautifulSoup
+    import re
+    
+    headers = {
+        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
+        'Accept': 'text/html,application/xhtml+xml',
+        'Accept-Language': 'es-ES,es;q=0.9',
+    }
+    
+    response = requests.get(url, headers=headers, timeout=15)
+    
+    if response.status_code != 200:
+        raise Exception(f"HTTP {response.status_code}")
+    
+    soup = BeautifulSoup(response.text, 'html.parser')
+    
+    # Extraer título
+    title_tag = soup.find('title')
+    title = title_tag.get_text(strip=True) if title_tag else ''
+    
+    # Extraer meta description
+    meta_desc = soup.find('meta', attrs={'name': 'description'})
+    description = meta_desc.get('content', '') if meta_desc else ''
+    
+    # Extraer contenido principal
+    # Eliminar scripts, styles, nav, footer
+    for element in soup(['script', 'style', 'nav', 'footer', 'header', 'aside']):
+        element.decompose()
+    
+    # Buscar contenido principal
+    main = soup.find('main') or soup.find('article') or soup.find('body')
+    content = main.get_text(' ', strip=True) if main else ''
+    
+    # Limpiar espacios
+    content = re.sub(r'\s+', ' ', content).strip()
+    
+    # Limitar longitud
+    if len(content) > 8000:
+        content = content[:8000] + "..."
+    
+    return {
+        'url': url,
+        'title': title[:200] if title else 'Sin título',
+        'domain': _extract_domain(url),
+        'position': position,
+        'ranking_position': position,
+        'content': content,
+        'word_count': len(content.split()),
+        'meta_description': description[:300] if description else '',
+        'scrape_success': True,
+        'error': None
+    }
+
+
+def _extract_domain(url: str) -> str:
+    """Extrae el dominio de una URL."""
+    try:
+        from urllib.parse import urlparse
+        parsed = urlparse(url)
+        return parsed.netloc.replace('www.', '')
+    except Exception:
+        return url
 
 
 # ============================================================================
@@ -415,60 +559,70 @@ def render_competitors_summary(competitors_data: List[Dict]) -> None:
     """
     Renderiza un resumen de los competidores analizados.
     
-    Muestra:
-    - Número de competidores analizados
-    - Lista de URLs con títulos
-    - Word count de cada competidor
-    - Posición de ranking
-    
     Args:
         competitors_data: Lista de dicts con datos de competidores
-        
-    Notes:
-        - Muestra en formato tabla para fácil visualización
-        - Incluye enlaces clickeables a las URLs
-        - Destaca métricas clave
     """
     
-    st.markdown("### 🏆 Competidores Analizados")
+    st.markdown("#### 📊 Competidores Analizados")
     
     # Métricas generales
     col1, col2, col3 = st.columns(3)
     
+    scraped_ok = [c for c in competitors_data if c.get('scrape_success', False)]
+    
     with col1:
-        st.metric("📊 Competidores", len(competitors_data))
+        st.metric("📊 Total URLs", len(competitors_data))
     
     with col2:
-        avg_words = sum(c.get('word_count', 0) for c in competitors_data) / len(competitors_data)
-        st.metric("📝 Promedio palabras", f"{int(avg_words):,}")
+        if scraped_ok:
+            avg_words = sum(c.get('word_count', 0) for c in scraped_ok) / len(scraped_ok)
+            st.metric("📝 Promedio palabras", f"{int(avg_words):,}")
+        else:
+            st.metric("📝 Promedio palabras", "N/A")
     
     with col3:
-        total_words = sum(c.get('word_count', 0) for c in competitors_data)
-        st.metric("💬 Total palabras", f"{total_words:,}")
+        st.metric("✅ Scrapeados", f"{len(scraped_ok)}/{len(competitors_data)}")
     
     # Tabla de competidores
     st.markdown("**URLs Analizadas:**")
     
     for i, comp in enumerate(competitors_data, 1):
-        with st.expander(f"#{comp.get('ranking_position', i)} - {comp.get('title', 'Sin título')}", expanded=False):
+        position = comp.get('ranking_position', comp.get('position', i))
+        title = comp.get('title', 'Sin título')[:60]
+        
+        # Icono según estado
+        if comp.get('scrape_success', False):
+            icon = "✅"
+            status = f"{comp.get('word_count', 0):,} palabras"
+        else:
+            icon = "❌"
+            status = comp.get('error', 'Error')[:30]
+        
+        with st.expander(f"{icon} #{position} - {title}", expanded=False):
             col_a, col_b = st.columns([3, 1])
             
             with col_a:
                 st.markdown(f"**URL:** [{comp.get('url', 'N/A')}]({comp.get('url', '#')})")
-                st.caption(f"Contenido: {comp.get('word_count', 0):,} palabras")
+                st.markdown(f"**Dominio:** {comp.get('domain', 'N/A')}")
+                
+                if comp.get('meta_description'):
+                    st.caption(f"📝 {comp['meta_description'][:150]}...")
             
             with col_b:
-                st.metric("Posición", f"#{comp.get('ranking_position', i)}")
+                st.metric("Posición", f"#{position}")
             
-            # Preview del contenido
-            content_preview = comp.get('content', '')[:300] + "..."
-            st.text_area(
-                "Preview del contenido",
-                content_preview,
-                height=100,
-                disabled=True,
-                key=f"preview_comp_{i}"
-            )
+            # Preview del contenido si hay
+            if comp.get('content') and comp.get('scrape_success'):
+                content_preview = comp['content'][:400] + "..."
+                st.text_area(
+                    "Preview del contenido",
+                    content_preview,
+                    height=100,
+                    disabled=True,
+                    key=f"preview_comp_{i}"
+                )
+            elif not comp.get('scrape_success'):
+                st.error(f"Error: {comp.get('error', 'No se pudo scrapear')}")
 
 
 # ============================================================================
@@ -484,11 +638,6 @@ def render_rewrite_configuration(keyword: str) -> Dict:
         
     Returns:
         Dict con la configuración elegida por el usuario
-        
-    Notes:
-        - Incluye inputs similares al modo nuevo pero simplificados
-        - Arquetipo es opcional (se usa como referencia)
-        - Algunos campos se auto-completan basándose en análisis
     """
     
     config = {}
@@ -519,14 +668,15 @@ def render_rewrite_configuration(keyword: str) -> Dict:
     with col2:
         # Sugerencia basada en competidores
         if st.session_state.rewrite_competitors_data:
-            avg_competitor_length = int(
-                sum(c.get('word_count', 0) for c in st.session_state.rewrite_competitors_data) 
-                / len(st.session_state.rewrite_competitors_data)
-            )
-            suggested = int(avg_competitor_length * 1.2)  # 20% más que el promedio
-            
-            st.info(f"💡 **Sugerencia**: ~{suggested:,} palabras\n\n"
-                   f"(20% más que el promedio competidor: {avg_competitor_length:,})")
+            scraped = [c for c in st.session_state.rewrite_competitors_data if c.get('scrape_success')]
+            if scraped:
+                avg_competitor_length = int(
+                    sum(c.get('word_count', 0) for c in scraped) / len(scraped)
+                )
+                suggested = int(avg_competitor_length * 1.2)  # 20% más que el promedio
+                
+                st.info(f"💡 **Sugerencia**: ~{suggested:,} palabras\n\n"
+                       f"(20% más que el promedio competidor: {avg_competitor_length:,})")
     
     # Keywords adicionales
     st.markdown("#### 🔑 Keywords SEO Adicionales")
@@ -606,8 +756,6 @@ def render_rewrite_configuration(keyword: str) -> Dict:
     )
     
     if use_arquetipo:
-        # Aquí deberías importar y usar la función de arquetipos
-        # Por ahora, lista simplificada
         arquetipos_nombres = [
             "ARQ-4: Review/Análisis",
             "ARQ-7: Roundup/Mejores X",
@@ -642,17 +790,12 @@ def validate_rewrite_inputs(
     
     Args:
         keyword: Keyword principal
-        competitors_data: Datos de competidores scrapeados
+        competitors_data: Datos de competidores
         config: Configuración del usuario
         gsc_analysis: Análisis de GSC (opcional)
         
     Returns:
         bool: True si todos los inputs necesarios están completos
-        
-    Notes:
-        - Valida campos obligatorios marcados con *
-        - Muestra mensajes específicos de qué falta
-        - Incluye warnings de GSC si aplica
     """
     
     missing = []
@@ -661,9 +804,14 @@ def validate_rewrite_inputs(
     if not keyword or len(keyword.strip()) < 3:
         missing.append("Keyword principal")
     
-    # Validar que se haya buscado competidores
+    # Validar que haya competidores analizados
     if not competitors_data or len(competitors_data) == 0:
-        missing.append("Análisis de competidores (presiona 'Buscar Competidores')")
+        missing.append("Análisis de competidores (busca o introduce URLs)")
+    else:
+        # Verificar que al menos uno tenga contenido
+        has_content = any(c.get('scrape_success', False) for c in competitors_data)
+        if not has_content:
+            missing.append("Al menos un competidor con contenido scrapeado")
     
     # Validar objetivo
     if not config.get('objetivo') or len(config['objetivo'].strip()) < 10:
@@ -701,11 +849,6 @@ def render_generation_summary(keyword: str, config: Dict, gsc_analysis: Optional
         keyword: Keyword principal
         config: Configuración del usuario
         gsc_analysis: Análisis de GSC (opcional)
-        
-    Notes:
-        - Permite al usuario revisar todo antes de generar
-        - Muestra los parámetros clave de forma visual
-        - Incluye alertas de GSC si aplica
     """
     
     st.markdown("### 📋 Resumen de Generación")
@@ -722,15 +865,17 @@ def render_generation_summary(keyword: str, config: Dict, gsc_analysis: Optional
         with col2:
             st.markdown("**Análisis competitivo:**")
             if st.session_state.rewrite_competitors_data:
+                scraped = [c for c in st.session_state.rewrite_competitors_data if c.get('scrape_success')]
                 n_comp = len(st.session_state.rewrite_competitors_data)
-                st.markdown(f"- 🏆 Competidores analizados: `{n_comp}`")
+                st.markdown(f"- 🏆 Competidores: `{len(scraped)}/{n_comp}` con contenido")
                 
-                avg_words = sum(c.get('word_count', 0) for c in st.session_state.rewrite_competitors_data) / n_comp
-                st.markdown(f"- 📊 Longitud promedio competencia: `{int(avg_words):,}`")
-                
-                diff = config['target_length'] - avg_words
-                pct = (diff / avg_words * 100) if avg_words > 0 else 0
-                st.markdown(f"- 📈 Nuestro diferencial: `{pct:+.0f}%`")
+                if scraped:
+                    avg_words = sum(c.get('word_count', 0) for c in scraped) / len(scraped)
+                    st.markdown(f"- 📊 Promedio competencia: `{int(avg_words):,}`")
+                    
+                    diff = config['target_length'] - avg_words
+                    pct = (diff / avg_words * 100) if avg_words > 0 else 0
+                    st.markdown(f"- 📈 Nuestro diferencial: `{pct:+.0f}%`")
             
             # Info de GSC si existe
             if gsc_analysis and gsc_analysis.get('has_matches'):
@@ -741,7 +886,7 @@ def render_generation_summary(keyword: str, config: Dict, gsc_analysis: Optional
     1. Análisis competitivo detallado
     2. Generación del borrador mejorado
     3. Análisis crítico
-    4. Versión final optimizada que supera a la competencia
+    4. Versión final optimizada
     """)
 
 
@@ -766,12 +911,6 @@ def prepare_rewrite_config(
         
     Returns:
         Dict con toda la configuración necesaria para generar
-        
-    Notes:
-        - Combina todos los datos en un dict estructurado
-        - Incluye referencias al análisis competitivo
-        - Incluye análisis de GSC si existe
-        - Listo para pasar al generador
     """
     
     # Configuración base
@@ -790,7 +929,7 @@ def prepare_rewrite_config(
             'url': rewrite_config.get('link_principal_url', ''),
             'text': rewrite_config.get('link_principal_text', '')
         },
-        'secundarios': []  # Se pueden añadir más si se implementa
+        'secundarios': []
     }
     
     # Producto alternativo
@@ -799,8 +938,10 @@ def prepare_rewrite_config(
         'text': rewrite_config.get('producto_alternativo_text', '')
     }
     
-    # Datos de competidores
-    config['competitors_data'] = competitors_data
+    # Datos de competidores (solo los scrapeados con éxito)
+    config['competitors_data'] = [
+        c for c in competitors_data if c.get('scrape_success', False)
+    ]
     
     # Análisis de GSC
     config['gsc_analysis'] = gsc_analysis
@@ -815,101 +956,12 @@ def prepare_rewrite_config(
     config['campos_arquetipo'] = {}
     
     # Timestamp para tracking
-    from datetime import datetime
     config['timestamp'] = datetime.now().isoformat()
     
+    # Info de fuente de datos
+    config['data_source'] = 'semrush' if SEMRUSH_ENABLED else 'manual'
+    
     return config
-
-
-# ============================================================================
-# FUNCIONES AUXILIARES
-# ============================================================================
-
-def get_competitor_summary_stats(competitors_data: List[Dict]) -> Dict:
-    """
-    Calcula estadísticas resumen de los competidores.
-    
-    Args:
-        competitors_data: Lista de dicts con datos de competidores
-        
-    Returns:
-        Dict con estadísticas: avg_words, max_words, min_words, total_words
-    """
-    
-    if not competitors_data:
-        return {
-            'avg_words': 0,
-            'max_words': 0,
-            'min_words': 0,
-            'total_words': 0
-        }
-    
-    word_counts = [c.get('word_count', 0) for c in competitors_data]
-    
-    return {
-        'avg_words': sum(word_counts) / len(word_counts),
-        'max_words': max(word_counts),
-        'min_words': min(word_counts),
-        'total_words': sum(word_counts)
-    }
-
-
-def suggest_optimal_length(competitors_data: List[Dict]) -> int:
-    """
-    Sugiere una longitud óptima basada en el análisis competitivo.
-    
-    Args:
-        competitors_data: Lista de dicts con datos de competidores
-        
-    Returns:
-        int: Longitud sugerida en palabras
-        
-    Notes:
-        - Usa estrategia de "superar al promedio en 20%"
-        - Considera el rango de la competencia
-        - Límites: mínimo 800, máximo 3000
-    """
-    
-    if not competitors_data:
-        return 1600  # Default
-    
-    stats = get_competitor_summary_stats(competitors_data)
-    
-    # Estrategia: 20% más que el promedio
-    suggested = int(stats['avg_words'] * 1.2)
-    
-    # Aplicar límites
-    suggested = max(800, min(3000, suggested))
-    
-    return suggested
-
-
-def format_competitors_for_prompt(competitors_data: List[Dict]) -> List[Dict[str, str]]:
-    """
-    Formatea los datos de competidores para incluir en el prompt.
-    
-    Args:
-        competitors_data: Lista de dicts con datos crudos
-        
-    Returns:
-        Lista de dicts formateados con 'url', 'title', 'content'
-        
-    Notes:
-        - Limita contenido a longitud razonable
-        - Limpia HTML si es necesario
-        - Incluye solo campos relevantes
-    """
-    
-    formatted = []
-    
-    for comp in competitors_data[:5]:  # Máximo 5
-        formatted.append({
-            'url': comp.get('url', ''),
-            'title': comp.get('title', ''),
-            'content': comp.get('content', '')[:3000]  # Limitar a 3000 chars
-        })
-    
-    return formatted
 
 
 # ============================================================================
@@ -917,65 +969,38 @@ def format_competitors_for_prompt(competitors_data: List[Dict]) -> List[Dict[str
 # ============================================================================
 
 def render_rewrite_help() -> None:
-    """
-    Renderiza información de ayuda sobre el modo reescritura.
-    """
+    """Renderiza información de ayuda sobre el modo reescritura."""
     
     with st.expander("ℹ️ Ayuda: Modo Reescritura"):
         st.markdown("""
         ### 🔄 ¿Cómo funciona el modo Reescritura?
         
-        **1. Verificación GSC (Nuevo):**
+        **1. Verificación GSC:**
         - Verifica si ya rankeas para la keyword
         - Detecta riesgo de canibalización
-        - Sugiere si crear nuevo o mejorar existente
         
         **2. Análisis Competitivo:**
-        - Buscamos automáticamente las top 5 URLs que rankean para tu keyword
-        - Scrapeamos y analizamos el contenido de cada competidor
-        - Identificamos qué temas cubren y cómo los estructuran
+        - **Con SEMrush**: Obtiene automáticamente top 5 URLs de Google
+        - **Manual**: Introduces las URLs que quieres analizar
+        - Scrapea y analiza el contenido de cada competidor
         
-        **3. Identificación de Gaps:**
-        - Detectamos información que falta en el contenido competidor
-        - Encontramos oportunidades de profundización
-        - Identificamos aspectos donde podemos diferenciarnos
-        
-        **4. Generación Mejorada:**
-        - Creamos contenido que cubre TODOS los gaps identificados
-        - Profundizamos más que la competencia en temas clave
-        - Aportamos el valor único de PcComponentes
+        **3. Generación Mejorada:**
+        - Crea contenido que cubre TODOS los gaps identificados
+        - Profundiza más que la competencia
+        - Aporta valor único de PcComponentes
         
         ---
         
-        ### ✅ Mejores Prácticas
+        ### 🔧 Configuración de SEMrush
         
-        **Para obtener mejores resultados:**
+        Para usar SEMrush automático, configura tu API key en:
+        - **Streamlit Cloud**: Settings > Secrets
+        - **Local**: Archivo `.env`
         
-        1. **Verifica GSC primero**: Evita crear contenido duplicado
-        2. **Keyword específica**: Más específica = análisis más preciso
-        3. **Objetivo claro**: Define qué quieres lograr
-        4. **Longitud adecuada**: Supera al promedio competidor en ~20%
-        5. **Contexto único**: Aporta información que solo tú tienes
-        6. **Enlaces estratégicos**: Guía al usuario a productos relevantes
-        
-        ---
-        
-        ### 🎯 Casos de Uso Ideales
-        
-        - **Mejorar artículos existentes**: Actualiza y supera tu propio contenido
-        - **Entrar en keywords competitivas**: Análisis te da ventaja táctica
-        - **Crear contenido diferenciado**: Identifica ángulos únicos
-        - **Superar a competidores específicos**: Análisis detallado de sus debilidades
-        
-        ---
-        
-        ### ⚠️ Limitaciones y Precauciones
-        
-        - **GSC es tu aliado**: Si ya rankeas bien, considera mejorar en lugar de crear nuevo
-        - **Canibalización**: Evita tener múltiples URLs compitiendo por la misma keyword
-        - **Scraping**: Puede fallar en sitios con protección anti-bot
-        - **JavaScript**: Sitios complejos pueden requerir rendering especial
-        - **Calidad**: El análisis es tan bueno como la calidad del contenido scrapeado
+        ```toml
+        [semrush]
+        api_key = "tu-api-key"
+        ```
         """)
 
 
@@ -984,10 +1009,10 @@ def render_rewrite_help() -> None:
 # ============================================================================
 
 # Versión del módulo
-__version__ = "4.1.1"
+__version__ = "4.2.0"
 
 # Número máximo de competidores a analizar
-MAX_COMPETITORS = 5
+MAX_COMPETITORS = 10
 
 # Longitud por defecto sugerida
 DEFAULT_REWRITE_LENGTH = 1600
