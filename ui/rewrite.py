@@ -257,112 +257,86 @@ def render_keyword_input() -> Tuple[str, bool]:
 def fetch_competitors_content(keyword: str) -> Optional[List[Dict]]:
     """
     Obtiene y analiza el contenido de los top 5 competidores para una keyword.
-    
-    Args:
-        keyword: Keyword para buscar competidores
-        
-    Returns:
-        Lista de dicts con datos de competidores o None si falla
-        Cada dict contiene: url, title, content, word_count
-        
-    Notes:
-        - Usa Google Custom Search API o similar
-        - Scrapea contenido de cada URL (máximo 5)
-        - Extrae título, contenido principal y word count
-        - Maneja errores de scraping gracefully
+    Usa SEMrush API para obtener URLs reales y luego scrapea el contenido.
     """
     
-    try:
-        # IMPORTANTE: Esta es una implementación simulada
-        # En producción, deberías usar:
-        # 1. Google Custom Search API para obtener URLs
-        # 2. Beautiful Soup / Scrapy para scraping de contenido
-        # 3. Zenrows o similar para JavaScript rendering
-        
-        st.warning("""
-        ⚠️ **Nota de implementación**: Esta es una versión simulada.
-        
-        En producción, integrar con:
-        - Google Custom Search API para obtener top URLs
-        - Sistema de scraping robusto (Zenrows/BeautifulSoup)
-        - Caché de resultados para evitar scraping repetido
-        """)
-        
-        # Datos simulados de ejemplo
-        competitors = [
-            {
-                'url': f'https://competitor1.com/article-about-{keyword.replace(" ", "-")}',
-                'title': f'Guía Completa: {keyword.title()}',
-                'content': generate_mock_competitor_content(keyword, 1500),
-                'word_count': 1500,
-                'ranking_position': 1
-            },
-            {
-                'url': f'https://competitor2.com/{keyword.replace(" ", "-")}-review',
-                'title': f'Review: {keyword.title()} - Análisis Detallado',
-                'content': generate_mock_competitor_content(keyword, 1200),
-                'word_count': 1200,
-                'ranking_position': 2
-            },
-            {
-                'url': f'https://competitor3.com/best-{keyword.replace(" ", "-")}',
-                'title': f'Los Mejores {keyword.title()} de 2025',
-                'content': generate_mock_competitor_content(keyword, 1800),
-                'word_count': 1800,
-                'ranking_position': 3
-            },
-            {
-                'url': f'https://competitor4.com/{keyword.replace(" ", "-")}-guide',
-                'title': f'{keyword.title()}: Guía de Compra',
-                'content': generate_mock_competitor_content(keyword, 1400),
-                'word_count': 1400,
-                'ranking_position': 4
-            },
-            {
-                'url': f'https://competitor5.com/choosing-{keyword.replace(" ", "-")}',
-                'title': f'Cómo Elegir {keyword.title()}',
-                'content': generate_mock_competitor_content(keyword, 1100),
-                'word_count': 1100,
-                'ranking_position': 5
-            }
-        ]
-        
-        return competitors
-        
-    except Exception as e:
-        st.error(f"❌ Error al obtener competidores: {str(e)}")
-        return None
+    from config.settings import SEMRUSH_ENABLED
+    
+    # Si SEMrush está habilitado, usar datos reales
+    if SEMRUSH_ENABLED:
+        try:
+            from core.semrush import fetch_competitors_with_content, get_keyword_overview
+            
+            # Obtener datos de SEMrush
+            analysis, competitors = fetch_competitors_with_content(keyword)
+            
+            if competitors:
+                # Guardar análisis de keyword en session state
+                st.session_state['semrush_keyword_data'] = analysis
+                return competitors
+            else:
+                st.warning("⚠️ No se encontraron resultados en SEMrush para esta keyword.")
+                
+        except Exception as e:
+            st.error(f"❌ Error con SEMrush API: {str(e)}")
+    
+    # Fallback: mostrar mensaje de que no hay API configurada
+    st.warning("""
+    ⚠️ **SEMrush API no configurada**
+    
+    Para obtener datos reales de competidores, configura tu API key de SEMrush:
+    
+    1. Obtén tu API key en [SEMrush](https://www.semrush.com/api/)
+    2. Añádela en Settings > Secrets:
+```
+    SEMRUSH_API_KEY = "tu-api-key"
+```
+    
+    Mientras tanto, puedes introducir URLs de competidores manualmente.
+    """)
+    
+    # Opción manual: input de URLs
+    return render_manual_competitor_input(keyword)
 
 
-def generate_mock_competitor_content(keyword: str, word_count: int) -> str:
+def render_manual_competitor_input(keyword: str) -> Optional[List[Dict]]:
     """
-    Genera contenido mock de competidor para testing.
+    Permite al usuario introducir URLs de competidores manualmente.
+    """
     
-    Esta función es temporal y debe reemplazarse con scraping real.
+    st.markdown("#### 📝 Introducir URLs manualmente")
     
-    Args:
-        keyword: Keyword del contenido
-        word_count: Número aproximado de palabras a generar
+    urls_input = st.text_area(
+        "URLs de competidores (una por línea)",
+        placeholder="https://competidor1.com/articulo\nhttps://competidor2.com/guia\n...",
+        height=150
+    )
+    
+    if st.button("🔍 Scrapear URLs", disabled=not urls_input):
+        urls = [u.strip() for u in urls_input.split('\n') if u.strip().startswith('http')]
         
-    Returns:
-        str: Contenido mock en texto plano
-    """
+        if not urls:
+            st.error("❌ No se encontraron URLs válidas")
+            return None
+        
+        competitors = []
+        
+        for i, url in enumerate(urls[:5], 1):
+            with st.spinner(f"Scrapeando {i}/{len(urls[:5])}: {url[:50]}..."):
+                from core.semrush import scrape_competitor_content
+                content_data = scrape_competitor_content(url)
+                
+                if content_data:
+                    content_data['ranking_position'] = i
+                    competitors.append(content_data)
+        
+        if competitors:
+            st.success(f"✅ Se scrapearon {len(competitors)} competidores")
+            return competitors
+        else:
+            st.error("❌ No se pudo scrapear ninguna URL")
     
-    # Contenido genérico de ejemplo
-    intro = f"En este artículo analizamos todo sobre {keyword}. "
-    body = f"Cuando hablamos de {keyword}, es importante considerar varios factores. "
-    body += "La calidad, el precio, las características y el rendimiento son aspectos clave. "
-    body += f"Los mejores {keyword} del mercado ofrecen un equilibrio entre estas variables. "
-    
-    # Repetir hasta alcanzar word count aproximado
-    content = intro
-    words = len(content.split())
-    
-    while words < word_count:
-        content += body
-        words = len(content.split())
-    
-    return content[:word_count * 6]  # Aproximación por caracteres
+    return None
 
 
 # ============================================================================
