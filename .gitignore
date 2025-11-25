@@ -1,0 +1,159 @@
+# ============================================================================
+# PcComponentes Content Generator - .gitignore
+# Versión 4.1.1
+# ============================================================================
+
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+build/
+develop-eggs/
+dist/
+downloads/
+eggs/
+.eggs/
+lib/
+lib64/
+parts/
+sdist/
+var/
+wheels/
+pip-wheel-metadata/
+share/python-wheels/
+*.egg-info/
+.installed.cfg
+*.egg
+MANIFEST
+
+# Virtual Environment
+venv/
+env/
+ENV/
+env.bak/
+venv.bak/
+.venv
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+.DS_Store
+
+# Streamlit
+.streamlit/secrets.toml
+.streamlit/credentials.toml
+
+# Environment Variables
+.env
+.env.local
+.env.*.local
+*.env
+
+# API Keys y Secrets
+secrets.toml
+credentials.toml
+*_secrets.json
+*_credentials.json
+api_keys.txt
+
+# Logs
+*.log
+logs/
+*.log.*
+
+# Testing
+.pytest_cache/
+.coverage
+htmlcov/
+.tox/
+.nox/
+coverage.xml
+*.cover
+.hypothesis/
+
+# Jupyter Notebook
+.ipynb_checkpoints
+*.ipynb
+
+# Data files (temporal)
+data/temp/
+data/cache/
+*.csv
+*.xlsx
+*.xls
+!data/categories.csv
+!data/example.csv
+
+# Output files
+outputs/
+exports/
+generated_content/
+*.html
+!templates/*.html
+
+# Backups
+*.bak
+*.backup
+*_backup.*
+*_old.*
+
+# OS
+Thumbs.db
+.DS_Store
+.AppleDouble
+.LSOverride
+._*
+
+# Windows
+desktop.ini
+$RECYCLE.BIN/
+
+# macOS
+.Spotlight-V100
+.Trashes
+
+# Temporary files
+tmp/
+temp/
+*.tmp
+
+# Database
+*.db
+*.sqlite
+*.sqlite3
+
+# Compiled files
+*.pyc
+*.pyo
+*.pyd
+
+# Package files
+*.tar.gz
+*.zip
+*.rar
+
+# Documentation builds
+docs/_build/
+site/
+
+# MyPy
+.mypy_cache/
+.dmypy.json
+dmypy.json
+
+# Pyre
+.pyre/
+
+# Pylint
+.pylint.d/
+
+# Streamlit Cloud specific
+.streamlit/config.toml
+
+# Node modules (si usas npm para algo)
+node_modules/
