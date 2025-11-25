@@ -50,18 +50,14 @@ def load_gsc_data(csv_path: str = DEFAULT_GSC_CSV_PATH) -> Optional[pd.DataFrame
     """
     
     try:
-        # Autodetección de delimitador
-        df = pd.read_csv(csv_path, sep=None, engine='python')
+        # ✅ CORRECCIÓN: encoding='utf-8-sig' elimina el BOM automáticamente
+        df = pd.read_csv(csv_path, sep=None, engine='python', encoding='utf-8-sig')
         
-        # Normalizar nombres de columnas (minúsculas, sin espacios)
+        # Normalizar nombres de columnas
         df.columns = df.columns.str.strip().str.lower()
         
-        # ✅ MAPEO DE COLUMNAS - Adaptar nombres del CSV a los esperados
-        column_mapping = {
-            'url': 'page',
-            'keyword': 'query',
-            # Añadir más mapeos si es necesario
-        }
+        # Mapeo de columnas
+        column_mapping = {'url': 'page', 'keyword': 'query'}
         df = df.rename(columns=column_mapping)
         
         # Validar columnas requeridas
@@ -79,10 +75,10 @@ def load_gsc_data(csv_path: str = DEFAULT_GSC_CSV_PATH) -> Optional[pd.DataFrame
         df['position'] = pd.to_numeric(df['position'], errors='coerce')
         df['ctr'] = pd.to_numeric(df['ctr'], errors='coerce')
         
-        # Eliminar filas con valores nulos en columnas críticas
+        # Eliminar filas con valores nulos
         df = df.dropna(subset=['page', 'query', 'position', 'impressions'])
         
-        # Filtrar datos según criterios
+        # Filtrar datos
         df = df[
             (df['position'] <= 50) &
             (df['impressions'] >= 10) &
@@ -90,7 +86,7 @@ def load_gsc_data(csv_path: str = DEFAULT_GSC_CSV_PATH) -> Optional[pd.DataFrame
             (df['query'].str.len() <= 100)
         ]
         
-        # Ordenar por clics descendente
+        # Ordenar
         df = df.sort_values('clicks', ascending=False)
         
         return df
