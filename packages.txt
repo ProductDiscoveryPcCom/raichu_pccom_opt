@@ -1,0 +1,19 @@
+# System dependencies for Streamlit Cloud
+# Uncomment if needed
+
+# For PDF processing
+# poppler-utils
+
+# For image processing
+# libpng-dev
+# libjpeg-dev
+
+# For XML/HTML processing (lxml)
+# libxml2-dev
+# libxslt-dev
+
+# For database connections (if needed)
+# libpq-dev
+
+# For other system libraries
+# build-essential
