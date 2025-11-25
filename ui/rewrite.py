@@ -4,13 +4,15 @@ Versión 4.1.1
 
 Este módulo maneja la interfaz de usuario para el modo REESCRITURA,
 que analiza contenido competidor y genera una versión mejorada.
+Incluye verificación GSC para evitar canibalización.
 
 Flujo:
 1. Input de keyword principal
-2. Scraping automático de top 5 URLs competidoras
-3. Análisis competitivo de contenido
-4. Configuración de parámetros adicionales
-5. Generación del contenido mejorado en 3 etapas
+2. Verificación GSC (nuevo)
+3. Scraping automático de top 5 URLs competidoras
+4. Análisis competitivo de contenido
+5. Configuración de parámetros adicionales
+6. Generación del contenido mejorado en 3 etapas
 
 Autor: PcComponentes - Product Discovery & Content
 """
@@ -21,6 +23,12 @@ import json
 
 # Importar utilidades
 from utils.html_utils import count_words_in_html
+
+# Importar configuración
+from config.settings import GSC_VERIFICATION_ENABLED
+
+# Importar sección GSC
+from ui.gsc_section import render_gsc_verification_section
 
 
 # ============================================================================
@@ -33,6 +41,7 @@ def render_rewrite_section() -> Tuple[bool, Dict]:
     
     Esta función gestiona toda la interfaz del modo reescritura, incluyendo:
     - Input de keyword y configuración
+    - Verificación GSC
     - Scraping de URLs competidoras
     - Análisis competitivo
     - Configuración de parámetros de generación
@@ -47,6 +56,7 @@ def render_rewrite_section() -> Tuple[bool, Dict]:
         - Usa st.session_state para mantener estado entre reruns
         - El scraping de competidores se hace automáticamente
         - Valida inputs antes de permitir generación
+        - Incluye verificación GSC antes del scraping
     """
     
     st.markdown("## 🔄 Modo: Reescritura Competitiva")
@@ -54,10 +64,11 @@ def render_rewrite_section() -> Tuple[bool, Dict]:
     st.info("""
     **¿Qué hace el modo reescritura?**
     
-    1. 🔍 Analiza el contenido de los **top 5 resultados** que rankean para tu keyword
-    2. 📊 Identifica **gaps de contenido** y oportunidades de mejora
-    3. ✍️ Genera contenido **superior** que cubre todos los gaps
-    4. 🎯 Te ayuda a **superar a la competencia** en Google
+    1. 🔍 Verifica si ya rankeas para esta keyword (GSC)
+    2. 🔍 Analiza el contenido de los **top 5 resultados** que rankean para tu keyword
+    3. 📊 Identifica **gaps de contenido** y oportunidades de mejora
+    4. ✍️ Genera contenido **superior** que cubre todos los gaps
+    5. 🎯 Te ayuda a **superar a la competencia** en Google
     
     Perfecto para: mejorar artículos existentes, crear contenido para keywords competitivas,
     superar contenido de competidores.
@@ -68,15 +79,41 @@ def render_rewrite_section() -> Tuple[bool, Dict]:
         st.session_state.rewrite_competitors_data = None
     if 'rewrite_analysis' not in st.session_state:
         st.session_state.rewrite_analysis = None
+    if 'rewrite_gsc_analysis' not in st.session_state:
+        st.session_state.rewrite_gsc_analysis = None
     
-    # Paso 1: Keyword y búsqueda de competidores
+    # Paso 1: Keyword y verificación GSC
     st.markdown("---")
-    st.markdown("### 🎯 Paso 1: Keyword y Análisis Competitivo")
+    st.markdown("### 🎯 Paso 1: Keyword Principal")
     
     keyword, should_search = render_keyword_input()
     
-    # Si hay que hacer búsqueda, ejecutar
+    # Verificación GSC (si está habilitada y hay keyword)
+    gsc_analysis = None
+    if GSC_VERIFICATION_ENABLED and keyword and len(keyword.strip()) >= 3:
+        st.markdown("---")
+        gsc_analysis = render_gsc_verification_section(
+            keyword=keyword,
+            show_disclaimer=True
+        )
+        st.session_state.rewrite_gsc_analysis = gsc_analysis
+        
+        # Advertencia si ya rankea bien
+        if gsc_analysis and gsc_analysis.get('has_matches'):
+            if gsc_analysis.get('recommendation') == 'already_ranking_well':
+                st.warning("""
+                ⚠️ **Precaución**: Ya rankeas en top 10 para esta keyword.
+                
+                Considera si realmente necesitas crear contenido nuevo o si deberías 
+                mejorar el contenido existente.
+                """)
+    
+    # Si hay que hacer búsqueda de competidores, ejecutar
     if should_search and keyword:
+        # Advertencia final antes de scrapear
+        if gsc_analysis and gsc_analysis.get('has_matches'):
+            st.info("💡 Procederemos a analizar competidores. Recuerda que ya tienes contenido rankeando.")
+        
         with st.spinner("🔍 Buscando y analizando competidores..."):
             competitors_data = fetch_competitors_content(keyword)
             st.session_state.rewrite_competitors_data = competitors_data
@@ -87,6 +124,7 @@ def render_rewrite_section() -> Tuple[bool, Dict]:
     
     # Mostrar competidores si existen
     if st.session_state.rewrite_competitors_data:
+        st.markdown("---")
         render_competitors_summary(st.session_state.rewrite_competitors_data)
     
     # Paso 2: Configuración de parámetros
@@ -99,7 +137,8 @@ def render_rewrite_section() -> Tuple[bool, Dict]:
     can_generate = validate_rewrite_inputs(
         keyword,
         st.session_state.rewrite_competitors_data,
-        rewrite_config
+        rewrite_config,
+        gsc_analysis
     )
     
     # Botón de generación
@@ -110,7 +149,7 @@ def render_rewrite_section() -> Tuple[bool, Dict]:
         return False, {}
     
     # Mostrar resumen antes de generar
-    render_generation_summary(keyword, rewrite_config)
+    render_generation_summary(keyword, rewrite_config, gsc_analysis)
     
     # Botón grande de generación
     col1, col2, col3 = st.columns([1, 2, 1])
@@ -126,7 +165,8 @@ def render_rewrite_section() -> Tuple[bool, Dict]:
         full_config = prepare_rewrite_config(
             keyword=keyword,
             competitors_data=st.session_state.rewrite_competitors_data,
-            rewrite_config=rewrite_config
+            rewrite_config=rewrite_config,
+            gsc_analysis=gsc_analysis
         )
         return True, full_config
     
@@ -171,7 +211,7 @@ def render_keyword_input() -> Tuple[str, bool]:
         # Botón de búsqueda
         search_disabled = not current_keyword or len(current_keyword.strip()) < 3
         search_button = st.button(
-            "🔍 Buscar",
+            "🔍 Buscar Competidores",
             disabled=search_disabled,
             use_container_width=True,
             type="primary"
@@ -183,6 +223,7 @@ def render_keyword_input() -> Tuple[str, bool]:
             # Limpiar datos de búsqueda anterior
             st.session_state.rewrite_competitors_data = None
             st.session_state.rewrite_analysis = None
+            st.session_state.rewrite_gsc_analysis = None
     
     st.session_state.last_rewrite_keyword = current_keyword
     
@@ -200,6 +241,10 @@ def render_keyword_input() -> Tuple[str, bool]:
         - "portátil para edición de vídeo 2025"
         - "diferencias rtx 4070 vs 4080"
         - "cómo elegir monitor gaming"
+        
+        **⚠️ Importante:**
+        - Verifica primero en GSC si ya rankeas para esta keyword
+        - Evita canibalización creando contenido duplicado
         """)
     
     return current_keyword, search_button
@@ -222,7 +267,7 @@ def fetch_competitors_content(keyword: str) -> Optional[List[Dict]]:
         
     Notes:
         - Usa Google Custom Search API o similar
-        - Scrapaía contenido de cada URL (máximo 5)
+        - Scrapea contenido de cada URL (máximo 5)
         - Extrae título, contenido principal y word count
         - Maneja errores de scraping gracefully
     """
@@ -234,7 +279,6 @@ def fetch_competitors_content(keyword: str) -> Optional[List[Dict]]:
         # 2. Beautiful Soup / Scrapy para scraping de contenido
         # 3. Zenrows o similar para JavaScript rendering
         
-        # Simulación de resultados (reemplazar con implementación real)
         st.warning("""
         ⚠️ **Nota de implementación**: Esta es una versión simulada.
         
@@ -344,7 +388,7 @@ def render_competitors_summary(competitors_data: List[Dict]) -> None:
         - Destaca métricas clave
     """
     
-    st.markdown("#### 🏆 Competidores Analizados")
+    st.markdown("### 🏆 Competidores Analizados")
     
     # Métricas generales
     col1, col2, col3 = st.columns(3)
@@ -548,7 +592,8 @@ def render_rewrite_configuration(keyword: str) -> Dict:
 def validate_rewrite_inputs(
     keyword: str,
     competitors_data: Optional[List[Dict]],
-    config: Dict
+    config: Dict,
+    gsc_analysis: Optional[Dict]
 ) -> bool:
     """
     Valida que todos los inputs necesarios estén completos.
@@ -557,6 +602,7 @@ def validate_rewrite_inputs(
         keyword: Keyword principal
         competitors_data: Datos de competidores scrapeados
         config: Configuración del usuario
+        gsc_analysis: Análisis de GSC (opcional)
         
     Returns:
         bool: True si todos los inputs necesarios están completos
@@ -564,6 +610,7 @@ def validate_rewrite_inputs(
     Notes:
         - Valida campos obligatorios marcados con *
         - Muestra mensajes específicos de qué falta
+        - Incluye warnings de GSC si aplica
     """
     
     missing = []
@@ -574,7 +621,7 @@ def validate_rewrite_inputs(
     
     # Validar que se haya buscado competidores
     if not competitors_data or len(competitors_data) == 0:
-        missing.append("Análisis de competidores (presiona 'Buscar')")
+        missing.append("Análisis de competidores (presiona 'Buscar Competidores')")
     
     # Validar objetivo
     if not config.get('objetivo') or len(config['objetivo'].strip()) < 10:
@@ -589,6 +636,14 @@ def validate_rewrite_inputs(
         st.warning(f"⚠️ **Faltan campos obligatorios:**\n\n" + "\n".join([f"- {m}" for m in missing]))
         return False
     
+    # Warning de GSC (no bloquea, solo advierte)
+    if gsc_analysis and gsc_analysis.get('has_matches'):
+        if gsc_analysis.get('recommendation') == 'already_ranking_well':
+            st.info("""
+            💡 **Recuerda**: Ya rankeas en top 10 para esta keyword. 
+            Evalúa si es mejor mejorar el contenido existente que crear uno nuevo.
+            """)
+    
     return True
 
 
@@ -596,17 +651,19 @@ def validate_rewrite_inputs(
 # RESUMEN ANTES DE GENERAR
 # ============================================================================
 
-def render_generation_summary(keyword: str, config: Dict) -> None:
+def render_generation_summary(keyword: str, config: Dict, gsc_analysis: Optional[Dict]) -> None:
     """
     Muestra un resumen de la configuración antes de generar.
     
     Args:
         keyword: Keyword principal
         config: Configuración del usuario
+        gsc_analysis: Análisis de GSC (opcional)
         
     Notes:
         - Permite al usuario revisar todo antes de generar
         - Muestra los parámetros clave de forma visual
+        - Incluye alertas de GSC si aplica
     """
     
     st.markdown("### 📋 Resumen de Generación")
@@ -632,13 +689,17 @@ def render_generation_summary(keyword: str, config: Dict) -> None:
                 diff = config['target_length'] - avg_words
                 pct = (diff / avg_words * 100) if avg_words > 0 else 0
                 st.markdown(f"- 📈 Nuestro diferencial: `{pct:+.0f}%`")
+            
+            # Info de GSC si existe
+            if gsc_analysis and gsc_analysis.get('has_matches'):
+                st.markdown(f"- ⚠️ GSC: `{len(set(m['url'] for m in gsc_analysis['matches']))} URLs rankeando`")
     
     st.info("""
     ✅ Todo listo para generar. El proceso tomará unos minutos e incluirá:
     1. Análisis competitivo detallado
     2. Generación del borrador mejorado
     3. Análisis crítico
-    4. Versión final optimizada
+    4. Versión final optimizada que supera a la competencia
     """)
 
 
@@ -649,7 +710,8 @@ def render_generation_summary(keyword: str, config: Dict) -> None:
 def prepare_rewrite_config(
     keyword: str,
     competitors_data: List[Dict],
-    rewrite_config: Dict
+    rewrite_config: Dict,
+    gsc_analysis: Optional[Dict]
 ) -> Dict:
     """
     Prepara la configuración completa para el proceso de generación.
@@ -658,6 +720,7 @@ def prepare_rewrite_config(
         keyword: Keyword principal
         competitors_data: Datos de competidores
         rewrite_config: Configuración del usuario
+        gsc_analysis: Análisis de GSC (opcional)
         
     Returns:
         Dict con toda la configuración necesaria para generar
@@ -665,7 +728,8 @@ def prepare_rewrite_config(
     Notes:
         - Combina todos los datos en un dict estructurado
         - Incluye referencias al análisis competitivo
-        - Lista para pasar al generador
+        - Incluye análisis de GSC si existe
+        - Listo para pasar al generador
     """
     
     # Configuración base
@@ -695,6 +759,9 @@ def prepare_rewrite_config(
     
     # Datos de competidores
     config['competitors_data'] = competitors_data
+    
+    # Análisis de GSC
+    config['gsc_analysis'] = gsc_analysis
     
     # Arquetipo de referencia (opcional)
     config['arquetipo_codigo'] = rewrite_config.get('arquetipo_codigo')
@@ -816,17 +883,22 @@ def render_rewrite_help() -> None:
         st.markdown("""
         ### 🔄 ¿Cómo funciona el modo Reescritura?
         
-        **1. Análisis Competitivo:**
+        **1. Verificación GSC (Nuevo):**
+        - Verifica si ya rankeas para la keyword
+        - Detecta riesgo de canibalización
+        - Sugiere si crear nuevo o mejorar existente
+        
+        **2. Análisis Competitivo:**
         - Buscamos automáticamente las top 5 URLs que rankean para tu keyword
         - Scrapeamos y analizamos el contenido de cada competidor
         - Identificamos qué temas cubren y cómo los estructuran
         
-        **2. Identificación de Gaps:**
+        **3. Identificación de Gaps:**
         - Detectamos información que falta en el contenido competidor
         - Encontramos oportunidades de profundización
         - Identificamos aspectos donde podemos diferenciarnos
         
-        **3. Generación Mejorada:**
+        **4. Generación Mejorada:**
         - Creamos contenido que cubre TODOS los gaps identificados
         - Profundizamos más que la competencia en temas clave
         - Aportamos el valor único de PcComponentes
@@ -837,11 +909,12 @@ def render_rewrite_help() -> None:
         
         **Para obtener mejores resultados:**
         
-        1. **Keyword específica**: Más específica = análisis más preciso
-        2. **Objetivo claro**: Define qué quieres lograr
-        3. **Longitud adecuada**: Supera al promedio competidor en ~20%
-        4. **Contexto único**: Aporta información que solo tú tienes
-        5. **Enlaces estratégicos**: Guía al usuario a productos relevantes
+        1. **Verifica GSC primero**: Evita crear contenido duplicado
+        2. **Keyword específica**: Más específica = análisis más preciso
+        3. **Objetivo claro**: Define qué quieres lograr
+        4. **Longitud adecuada**: Supera al promedio competidor en ~20%
+        5. **Contexto único**: Aporta información que solo tú tienes
+        6. **Enlaces estratégicos**: Guía al usuario a productos relevantes
         
         ---
         
@@ -854,12 +927,13 @@ def render_rewrite_help() -> None:
         
         ---
         
-        ### ⚠️ Limitaciones
+        ### ⚠️ Limitaciones y Precauciones
         
-        - El scraping puede fallar en algunos sitios con protección anti-bot
-        - Sitios con mucho JavaScript pueden requerir rendering especial
-        - El análisis es tan bueno como la calidad del contenido scrapeado
-        - Algunos sitios pueden bloquear el scraping (respeta robots.txt)
+        - **GSC es tu aliado**: Si ya rankeas bien, considera mejorar en lugar de crear nuevo
+        - **Canibalización**: Evita tener múltiples URLs compitiendo por la misma keyword
+        - **Scraping**: Puede fallar en sitios con protección anti-bot
+        - **JavaScript**: Sitios complejos pueden requerir rendering especial
+        - **Calidad**: El análisis es tan bueno como la calidad del contenido scrapeado
         """)
 
 
