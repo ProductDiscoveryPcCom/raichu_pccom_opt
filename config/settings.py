@@ -73,6 +73,20 @@ TEMPERATURE = float(os.getenv('TEMPERATURE', '0.7'))
 
 
 # ============================================================================
+# CONFIGURACIÓN DE SEMRUSH
+# ============================================================================
+
+# API Key de SEMrush
+SEMRUSH_API_KEY = os.getenv('SEMRUSH_API_KEY')
+
+# Base de datos por defecto (España)
+SEMRUSH_DATABASE = os.getenv('SEMRUSH_DATABASE', 'es')
+
+# Habilitar integración SEMrush
+SEMRUSH_ENABLED = os.getenv('SEMRUSH_ENABLED', 'True').lower() == 'true' and bool(SEMRUSH_API_KEY)
+
+
+# ============================================================================
 # CONFIGURACIÓN DE LA APLICACIÓN
 # ============================================================================
 
