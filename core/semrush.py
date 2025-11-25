@@ -1,501 +1,709 @@
 """
-SEMrush API Integration - PcComponentes Content Generator
-Versión 4.1.1
+SEMrush Integration - PcComponentes Content Generator
+Versión 4.2.0
 
-Integración con SEMrush API para:
-- Obtener top resultados orgánicos
-- Volumen de búsquedas
-- Dificultad de keyword
-- Análisis competitivo
-
-Documentación API: https://developer.semrush.com/api/
+Integración completa con SEMrush API para:
+- Obtener URLs competidoras para una keyword
+- Analizar contenido de competidores
+- Extraer métricas SEO relevantes
 
 Autor: PcComponentes - Product Discovery & Content
 """
 
 import requests
 from typing import Dict, List, Optional, Tuple
-import streamlit as st
+from dataclasses import dataclass
+from datetime import datetime
+import time
+import re
 
-from config.settings import SEMRUSH_API_KEY
-
-
-# ============================================================================
-# CONFIGURACIÓN
-# ============================================================================
-
-SEMRUSH_BASE_URL = "https://api.semrush.com/"
-
-# Database para España
-DEFAULT_DATABASE = "es"
-
-# Límites
-MAX_ORGANIC_RESULTS = 10
+# BeautifulSoup para scraping de contenido
+from bs4 import BeautifulSoup
 
 
 # ============================================================================
-# FUNCIONES PRINCIPALES
+# CONFIGURACIÓN Y CONSTANTES
 # ============================================================================
 
-def get_keyword_overview(keyword: str, database: str = DEFAULT_DATABASE) -> Optional[Dict]:
+# Endpoints de SEMrush API
+SEMRUSH_API_BASE = "https://api.semrush.com"
+SEMRUSH_ORGANIC_RESULTS = f"{SEMRUSH_API_BASE}/"
+
+# Databases disponibles (España por defecto)
+SEMRUSH_DATABASES = {
+    'es': 'es',      # España
+    'us': 'us',      # Estados Unidos
+    'uk': 'uk',      # Reino Unido
+    'fr': 'fr',      # Francia
+    'de': 'de',      # Alemania
+    'it': 'it',      # Italia
+    'pt': 'pt',      # Portugal
+    'mx': 'mx',      # México
+    'ar': 'ar',      # Argentina
+    'co': 'co',      # Colombia
+}
+
+# Límites y configuración
+MAX_COMPETITORS = 10
+DEFAULT_COMPETITORS = 5
+REQUEST_TIMEOUT = 30
+RATE_LIMIT_DELAY = 0.5  # Segundos entre requests
+
+# User Agent para scraping de contenido
+DEFAULT_USER_AGENT = (
+    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+    "AppleWebKit/537.36 (KHTML, like Gecko) "
+    "Chrome/120.0.0.0 Safari/537.36"
+)
+
+
+# ============================================================================
+# DATA CLASSES
+# ============================================================================
+
+@dataclass
+class CompetitorData:
     """
-    Obtiene métricas de una keyword: volumen, dificultad, CPC.
+    Datos de un competidor obtenidos de SEMrush y scraping.
     
-    API: phrase_this
-    Docs: https://developer.semrush.com/api/v3/analytics/keyword-reports/
-    
-    Args:
-        keyword: Keyword a analizar
-        database: Base de datos regional (es, us, uk, etc.)
-        
-    Returns:
-        Dict con métricas o None si falla
-        {
-            'keyword': str,
-            'volume': int,           # Volumen mensual
-            'difficulty': float,     # KD 0-100
-            'cpc': float,           # CPC en USD
-            'competition': float,    # Competencia 0-1
-            'trend': list           # Tendencia 12 meses
-        }
+    Attributes:
+        url: URL del competidor
+        title: Título de la página
+        domain: Dominio del sitio
+        position: Posición en SERP
+        traffic: Tráfico estimado (SEMrush)
+        traffic_cost: Coste de tráfico estimado (SEMrush)
+        content: Contenido scrapeado de la página
+        word_count: Número de palabras del contenido
+        headings: Lista de encabezados (H1, H2, H3)
+        meta_description: Meta descripción
+        scrape_success: Si el scraping fue exitoso
+        error_message: Mensaje de error si falló
     """
+    url: str
+    title: str = ""
+    domain: str = ""
+    position: int = 0
+    traffic: float = 0.0
+    traffic_cost: float = 0.0
+    content: str = ""
+    word_count: int = 0
+    headings: List[Dict[str, str]] = None
+    meta_description: str = ""
+    scrape_success: bool = False
+    error_message: str = ""
     
-    if not SEMRUSH_API_KEY:
-        return None
+    def __post_init__(self):
+        if self.headings is None:
+            self.headings = []
     
-    try:
-        params = {
-            'type': 'phrase_this',
-            'key': SEMRUSH_API_KEY,
-            'phrase': keyword,
-            'database': database,
-            'export_columns': 'Ph,Nq,Kd,Cp,Co,Nr,Td'
-        }
-        
-        response = requests.get(SEMRUSH_BASE_URL, params=params, timeout=30)
-        
-        if response.status_code != 200:
-            return None
-        
-        # Parsear respuesta (formato CSV)
-        lines = response.text.strip().split('\n')
-        if len(lines) < 2:
-            return None
-        
-        # Primera línea: headers, segunda: datos
-        headers = lines[0].split(';')
-        values = lines[1].split(';')
-        
-        data = dict(zip(headers, values))
-        
+    def to_dict(self) -> Dict:
+        """Convierte a diccionario para serialización."""
         return {
-            'keyword': keyword,
-            'volume': int(data.get('Search Volume', 0) or 0),
-            'difficulty': float(data.get('Keyword Difficulty', 0) or 0),
-            'cpc': float(data.get('CPC', 0) or 0),
-            'competition': float(data.get('Competition', 0) or 0),
-            'results': int(data.get('Number of Results', 0) or 0)
+            'url': self.url,
+            'title': self.title,
+            'domain': self.domain,
+            'position': self.position,
+            'ranking_position': self.position,  # Alias para compatibilidad
+            'traffic': self.traffic,
+            'traffic_cost': self.traffic_cost,
+            'content': self.content,
+            'word_count': self.word_count,
+            'headings': self.headings,
+            'meta_description': self.meta_description,
+            'scrape_success': self.scrape_success,
+            'error_message': self.error_message
         }
-    
-    except Exception as e:
-        st.warning(f"⚠️ Error en SEMrush API: {str(e)}")
-        return None
 
 
-def get_organic_results(keyword: str, database: str = DEFAULT_DATABASE, limit: int = 10) -> Optional[List[Dict]]:
+@dataclass
+class SEMrushResponse:
     """
-    Obtiene los top resultados orgánicos para una keyword.
+    Respuesta estructurada de SEMrush API.
     
-    API: phrase_organic
+    Attributes:
+        success: Si la llamada fue exitosa
+        competitors: Lista de CompetitorData
+        keyword: Keyword buscada
+        database: Base de datos usada
+        total_results: Número total de resultados
+        error_message: Mensaje de error si falló
+        api_units_used: Unidades de API consumidas
+    """
+    success: bool
+    competitors: List[CompetitorData]
+    keyword: str
+    database: str
+    total_results: int = 0
+    error_message: str = ""
+    api_units_used: int = 0
     
-    Args:
-        keyword: Keyword a buscar
-        database: Base de datos regional
-        limit: Número de resultados (max 100)
+    def to_dict(self) -> Dict:
+        """Convierte a diccionario para serialización."""
+        return {
+            'success': self.success,
+            'competitors': [c.to_dict() for c in self.competitors],
+            'keyword': self.keyword,
+            'database': self.database,
+            'total_results': self.total_results,
+            'error_message': self.error_message,
+            'api_units_used': self.api_units_used
+        }
+
+
+# ============================================================================
+# CLASE PRINCIPAL - SEMRUSH CLIENT
+# ============================================================================
+
+class SEMrushClient:
+    """
+    Cliente para interactuar con SEMrush API.
+    
+    Permite:
+    - Obtener resultados orgánicos para una keyword
+    - Scrapear contenido de URLs competidoras
+    - Analizar métricas SEO de competidores
+    
+    Example:
+        >>> client = SEMrushClient(api_key="tu-api-key")
+        >>> response = client.get_organic_competitors("mejor portátil gaming")
+        >>> for comp in response.competitors:
+        ...     print(f"{comp.position}. {comp.title}")
+    """
+    
+    def __init__(
+        self,
+        api_key: str,
+        database: str = 'es',
+        user_agent: str = DEFAULT_USER_AGENT,
+        timeout: int = REQUEST_TIMEOUT
+    ):
+        """
+        Inicializa el cliente de SEMrush.
         
-    Returns:
-        Lista de dicts con resultados orgánicos o None si falla
-        [
-            {
-                'position': int,
-                'url': str,
-                'title': str,
-                'domain': str,
-                'traffic_percent': float
+        Args:
+            api_key: API key de SEMrush
+            database: Base de datos regional (default: 'es' para España)
+            user_agent: User agent para scraping de contenido
+            timeout: Timeout para requests en segundos
+            
+        Raises:
+            ValueError: Si la API key está vacía
+        """
+        if not api_key:
+            raise ValueError("SEMrush API key es requerida")
+        
+        self.api_key = api_key
+        self.database = database if database in SEMRUSH_DATABASES else 'es'
+        self.user_agent = user_agent
+        self.timeout = timeout
+        self._last_request_time = 0
+    
+    def _rate_limit(self) -> None:
+        """Aplica rate limiting entre requests."""
+        elapsed = time.time() - self._last_request_time
+        if elapsed < RATE_LIMIT_DELAY:
+            time.sleep(RATE_LIMIT_DELAY - elapsed)
+        self._last_request_time = time.time()
+    
+    def get_organic_competitors(
+        self,
+        keyword: str,
+        num_results: int = DEFAULT_COMPETITORS,
+        scrape_content: bool = True,
+        exclude_domains: Optional[List[str]] = None
+    ) -> SEMrushResponse:
+        """
+        Obtiene los competidores orgánicos para una keyword.
+        
+        Args:
+            keyword: Keyword a buscar
+            num_results: Número de resultados a obtener (max 10)
+            scrape_content: Si True, scrapea el contenido de cada URL
+            exclude_domains: Lista de dominios a excluir (ej: ['pccomponentes.com'])
+            
+        Returns:
+            SEMrushResponse con la lista de competidores
+            
+        Notes:
+            - Usa el endpoint phrase_organic de SEMrush
+            - Aplica rate limiting automático
+            - Excluye dominios propios por defecto
+        """
+        
+        # Validar parámetros
+        num_results = min(max(1, num_results), MAX_COMPETITORS)
+        
+        if exclude_domains is None:
+            exclude_domains = ['pccomponentes.com', 'pccomponentes.pt']
+        
+        # Aplicar rate limiting
+        self._rate_limit()
+        
+        try:
+            # Construir parámetros de la API
+            params = {
+                'type': 'phrase_organic',
+                'key': self.api_key,
+                'phrase': keyword,
+                'database': self.database,
+                'display_limit': num_results + len(exclude_domains) + 5,  # Extra para filtrar
+                'export_columns': 'Ph,Po,Nq,Cp,Co,Ur,Tt,Ds,Vu,Fk'
             }
-        ]
-    """
+            
+            # Hacer request a SEMrush
+            response = requests.get(
+                SEMRUSH_ORGANIC_RESULTS,
+                params=params,
+                timeout=self.timeout
+            )
+            
+            # Verificar respuesta
+            if response.status_code != 200:
+                return SEMrushResponse(
+                    success=False,
+                    competitors=[],
+                    keyword=keyword,
+                    database=self.database,
+                    error_message=f"Error HTTP {response.status_code}: {response.text[:200]}"
+                )
+            
+            # Verificar errores de API
+            if response.text.startswith('ERROR'):
+                return SEMrushResponse(
+                    success=False,
+                    competitors=[],
+                    keyword=keyword,
+                    database=self.database,
+                    error_message=f"SEMrush API Error: {response.text}"
+                )
+            
+            # Parsear respuesta CSV de SEMrush
+            competitors = self._parse_semrush_response(
+                response.text,
+                exclude_domains,
+                num_results
+            )
+            
+            # Scrapear contenido si se solicita
+            if scrape_content and competitors:
+                competitors = self._scrape_competitors_content(competitors)
+            
+            return SEMrushResponse(
+                success=True,
+                competitors=competitors,
+                keyword=keyword,
+                database=self.database,
+                total_results=len(competitors),
+                api_units_used=1  # Aproximación
+            )
+        
+        except requests.Timeout:
+            return SEMrushResponse(
+                success=False,
+                competitors=[],
+                keyword=keyword,
+                database=self.database,
+                error_message="Timeout al conectar con SEMrush API"
+            )
+        
+        except requests.RequestException as e:
+            return SEMrushResponse(
+                success=False,
+                competitors=[],
+                keyword=keyword,
+                database=self.database,
+                error_message=f"Error de conexión: {str(e)}"
+            )
+        
+        except Exception as e:
+            return SEMrushResponse(
+                success=False,
+                competitors=[],
+                keyword=keyword,
+                database=self.database,
+                error_message=f"Error inesperado: {str(e)}"
+            )
     
-    if not SEMRUSH_API_KEY:
-        return None
+    def _parse_semrush_response(
+        self,
+        csv_text: str,
+        exclude_domains: List[str],
+        max_results: int
+    ) -> List[CompetitorData]:
+        """
+        Parsea la respuesta CSV de SEMrush.
+        
+        El formato de SEMrush es CSV con columnas:
+        Ph (Phrase), Po (Position), Nq (Number of queries), Cp (CPC),
+        Co (Competition), Ur (URL), Tt (Title), Ds (Description),
+        Vu (Visibility), Fk (Features in SERP)
+        
+        Args:
+            csv_text: Texto CSV de la respuesta
+            exclude_domains: Dominios a excluir
+            max_results: Número máximo de resultados
+            
+        Returns:
+            Lista de CompetitorData parseados
+        """
+        competitors = []
+        lines = csv_text.strip().split('\n')
+        
+        if len(lines) < 2:
+            return competitors
+        
+        # Primera línea son los headers
+        headers = lines[0].split(';')
+        
+        # Mapear índices de columnas
+        col_map = {}
+        for i, header in enumerate(headers):
+            col_map[header.strip()] = i
+        
+        # Procesar cada línea de datos
+        for line in lines[1:]:
+            if len(competitors) >= max_results:
+                break
+            
+            values = line.split(';')
+            
+            if len(values) < 6:
+                continue
+            
+            try:
+                # Extraer URL
+                url_idx = col_map.get('Ur', col_map.get('url', 5))
+                url = values[url_idx].strip() if url_idx < len(values) else ''
+                
+                if not url:
+                    continue
+                
+                # Extraer dominio
+                domain = self._extract_domain(url)
+                
+                # Filtrar dominios excluidos
+                if any(excluded in domain.lower() for excluded in exclude_domains):
+                    continue
+                
+                # Extraer posición
+                pos_idx = col_map.get('Po', col_map.get('position', 1))
+                position = int(values[pos_idx]) if pos_idx < len(values) else 0
+                
+                # Extraer título
+                title_idx = col_map.get('Tt', col_map.get('title', 6))
+                title = values[title_idx].strip() if title_idx < len(values) else ''
+                
+                # Extraer tráfico (si está disponible)
+                traffic_idx = col_map.get('Vu', -1)
+                traffic = float(values[traffic_idx]) if traffic_idx >= 0 and traffic_idx < len(values) else 0.0
+                
+                # Extraer descripción
+                desc_idx = col_map.get('Ds', col_map.get('description', 7))
+                description = values[desc_idx].strip() if desc_idx < len(values) else ''
+                
+                competitor = CompetitorData(
+                    url=url,
+                    title=title,
+                    domain=domain,
+                    position=position,
+                    traffic=traffic,
+                    meta_description=description
+                )
+                
+                competitors.append(competitor)
+            
+            except (ValueError, IndexError) as e:
+                # Ignorar líneas mal formateadas
+                continue
+        
+        return competitors
     
-    try:
-        params = {
-            'type': 'phrase_organic',
-            'key': SEMRUSH_API_KEY,
-            'phrase': keyword,
-            'database': database,
-            'display_limit': min(limit, 100),
-            'export_columns': 'Dn,Ur,Tt,Po,Tg'
+    def _extract_domain(self, url: str) -> str:
+        """Extrae el dominio de una URL."""
+        try:
+            from urllib.parse import urlparse
+            parsed = urlparse(url)
+            return parsed.netloc.replace('www.', '')
+        except Exception:
+            return url
+    
+    def _scrape_competitors_content(
+        self,
+        competitors: List[CompetitorData]
+    ) -> List[CompetitorData]:
+        """
+        Scrapea el contenido de cada URL competidora.
+        
+        Args:
+            competitors: Lista de CompetitorData a scrapear
+            
+        Returns:
+            Lista actualizada con contenido scrapeado
+        """
+        
+        headers = {
+            'User-Agent': self.user_agent,
+            'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
+            'Accept-Language': 'es-ES,es;q=0.9,en;q=0.8',
+            'Accept-Encoding': 'gzip, deflate, br',
+            'Connection': 'keep-alive',
         }
         
-        response = requests.get(SEMRUSH_BASE_URL, params=params, timeout=30)
+        for competitor in competitors:
+            self._rate_limit()
+            
+            try:
+                response = requests.get(
+                    competitor.url,
+                    headers=headers,
+                    timeout=self.timeout,
+                    allow_redirects=True
+                )
+                
+                if response.status_code != 200:
+                    competitor.error_message = f"HTTP {response.status_code}"
+                    continue
+                
+                # Parsear HTML
+                soup = BeautifulSoup(response.text, 'html.parser')
+                
+                # Extraer título si no lo teníamos
+                if not competitor.title:
+                    title_tag = soup.find('title')
+                    if title_tag:
+                        competitor.title = title_tag.get_text(strip=True)
+                
+                # Extraer meta description si no la teníamos
+                if not competitor.meta_description:
+                    meta_desc = soup.find('meta', attrs={'name': 'description'})
+                    if meta_desc:
+                        competitor.meta_description = meta_desc.get('content', '')
+                
+                # Extraer contenido principal
+                competitor.content = self._extract_main_content(soup)
+                competitor.word_count = len(competitor.content.split())
+                
+                # Extraer headings
+                competitor.headings = self._extract_headings(soup)
+                
+                competitor.scrape_success = True
+            
+            except requests.Timeout:
+                competitor.error_message = "Timeout"
+            
+            except requests.RequestException as e:
+                competitor.error_message = f"Request error: {str(e)[:50]}"
+            
+            except Exception as e:
+                competitor.error_message = f"Error: {str(e)[:50]}"
         
-        if response.status_code != 200:
-            return None
+        return competitors
+    
+    def _extract_main_content(self, soup: BeautifulSoup) -> str:
+        """
+        Extrae el contenido principal de una página.
         
-        # Parsear respuesta
-        lines = response.text.strip().split('\n')
-        if len(lines) < 2:
-            return []
+        Intenta encontrar el contenido principal eliminando
+        navegación, footers, sidebars, etc.
         
-        headers = lines[0].split(';')
-        results = []
+        Args:
+            soup: Objeto BeautifulSoup parseado
+            
+        Returns:
+            str: Contenido de texto limpio
+        """
         
-        for line in lines[1:limit+1]:
-            values = line.split(';')
-            if len(values) >= len(headers):
-                data = dict(zip(headers, values))
-                results.append({
-                    'position': int(data.get('Position', 0) or 0),
-                    'url': data.get('Url', ''),
-                    'title': data.get('Title', ''),
-                    'domain': data.get('Domain', ''),
-                    'traffic_percent': float(data.get('Traffic (%)', 0) or 0)
-                })
+        # Clonar soup para no modificar el original
+        soup_copy = BeautifulSoup(str(soup), 'html.parser')
         
-        return results
-    
-    except Exception as e:
-        st.warning(f"⚠️ Error obteniendo resultados orgánicos: {str(e)}")
-        return None
-
-
-def get_competitor_analysis(keyword: str, database: str = DEFAULT_DATABASE) -> Optional[Dict]:
-    """
-    Análisis completo de competidores para una keyword.
-    
-    Combina keyword overview + organic results.
-    
-    Args:
-        keyword: Keyword objetivo
-        database: Base de datos regional
+        # Eliminar elementos no deseados
+        for element in soup_copy.find_all([
+            'nav', 'header', 'footer', 'aside', 'script', 'style',
+            'noscript', 'iframe', 'form', 'button', 'input'
+        ]):
+            element.decompose()
         
-    Returns:
-        Dict con análisis completo o None si falla
-    """
-    
-    # Obtener métricas de keyword
-    keyword_data = get_keyword_overview(keyword, database)
-    
-    # Obtener resultados orgánicos
-    organic_results = get_organic_results(keyword, database, limit=10)
-    
-    if not keyword_data and not organic_results:
-        return None
-    
-    return {
-        'keyword': keyword,
-        'metrics': keyword_data or {},
-        'organic_results': organic_results or [],
-        'top_5_urls': [r['url'] for r in (organic_results or [])[:5]],
-        'has_data': bool(keyword_data or organic_results)
-    }
-
-
-# ============================================================================
-# SCRAPING DE CONTENIDO DE URLs
-# ============================================================================
-
-def scrape_competitor_content(url: str) -> Optional[Dict]:
-    """
-    Scrapea el contenido de una URL competidora.
-    
-    Args:
-        url: URL a scrapear
+        # Eliminar por clases comunes de navegación/sidebar
+        for selector in [
+            '[class*="nav"]', '[class*="menu"]', '[class*="sidebar"]',
+            '[class*="footer"]', '[class*="header"]', '[class*="cookie"]',
+            '[class*="banner"]', '[class*="ad"]', '[class*="social"]',
+            '[id*="nav"]', '[id*="menu"]', '[id*="sidebar"]',
+            '[id*="footer"]', '[id*="header"]'
+        ]:
+            for element in soup_copy.select(selector):
+                element.decompose()
         
-    Returns:
-        Dict con contenido o None si falla
-    """
-    
-    from bs4 import BeautifulSoup
-    from config.settings import USER_AGENT, ZENROWS_API_KEY
-    
-    headers = {
-        'User-Agent': USER_AGENT,
-        'Accept': 'text/html,application/xhtml+xml',
-        'Accept-Language': 'es-ES,es;q=0.9'
-    }
-    
-    try:
-        # Intentar con Zenrows si está configurado (mejor para JS)
-        if ZENROWS_API_KEY:
-            zenrows_url = f"https://api.zenrows.com/v1/?apikey={ZENROWS_API_KEY}&url={url}&js_render=true"
-            response = requests.get(zenrows_url, timeout=60)
-        else:
-            # Fallback a requests directo
-            response = requests.get(url, headers=headers, timeout=30)
+        # Intentar encontrar el contenido principal
+        main_content = None
         
-        if response.status_code != 200:
-            return None
-        
-        soup = BeautifulSoup(response.text, 'html.parser')
-        
-        # Extraer título
-        title = ""
-        title_tag = soup.find('title')
-        if title_tag:
-            title = title_tag.get_text(strip=True)
-        
-        # Extraer contenido principal
-        # Intentar varios selectores comunes
-        content = ""
-        for selector in ['article', 'main', '.content', '.post-content', '#content', '.entry-content']:
-            element = soup.select_one(selector)
-            if element:
-                content = element.get_text(' ', strip=True)
+        # Buscar por elementos semánticos
+        for selector in ['main', 'article', '[role="main"]', '.content', '#content']:
+            main_content = soup_copy.select_one(selector)
+            if main_content:
                 break
         
-        # Fallback: todo el body
-        if not content:
-            body = soup.find('body')
-            if body:
-                # Eliminar scripts, styles, nav, footer
-                for tag in body(['script', 'style', 'nav', 'footer', 'header', 'aside']):
-                    tag.decompose()
-                content = body.get_text(' ', strip=True)
+        # Si no encontramos contenedor principal, usar body
+        if not main_content:
+            main_content = soup_copy.find('body') or soup_copy
         
-        # Contar palabras
-        word_count = len(content.split()) if content else 0
+        # Extraer texto
+        text = main_content.get_text(' ', strip=True)
         
-        return {
-            'url': url,
-            'title': title,
-            'content': content[:5000],  # Limitar a 5000 chars
-            'word_count': word_count
-        }
-    
-    except Exception as e:
-        return {
-            'url': url,
-            'title': 'Error al scrapear',
-            'content': f'No se pudo acceder: {str(e)}',
-            'word_count': 0,
-            'error': True
-        }
-
-
-def fetch_competitors_with_content(keyword: str, database: str = DEFAULT_DATABASE) -> Tuple[Optional[Dict], List[Dict]]:
-    """
-    Obtiene análisis de keyword + contenido scrapeado de top 5 competidores.
-    
-    Args:
-        keyword: Keyword objetivo
-        database: Base de datos regional
+        # Limpiar espacios múltiples
+        text = re.sub(r'\s+', ' ', text).strip()
         
-    Returns:
-        Tuple: (keyword_analysis, competitors_with_content)
-    """
+        # Limitar longitud para evitar contenido excesivo
+        max_chars = 10000
+        if len(text) > max_chars:
+            text = text[:max_chars] + "..."
+        
+        return text
     
-    # Obtener análisis de SEMrush
-    analysis = get_competitor_analysis(keyword, database)
-    
-    if not analysis or not analysis.get('top_5_urls'):
-        return analysis, []
-    
-    # Scrapear contenido de cada URL
-    competitors_content = []
-    
-    for i, url in enumerate(analysis['top_5_urls'][:5], 1):
-        with st.spinner(f"Scrapeando competidor {i}/5: {url[:50]}..."):
-            content_data = scrape_competitor_content(url)
+    def _extract_headings(self, soup: BeautifulSoup) -> List[Dict[str, str]]:
+        """
+        Extrae los encabezados (H1-H4) de la página.
+        
+        Args:
+            soup: Objeto BeautifulSoup parseado
             
-            if content_data:
-                # Añadir datos de posición de SEMrush
-                organic_data = next(
-                    (r for r in analysis['organic_results'] if r['url'] == url), 
-                    {}
-                )
-                content_data['ranking_position'] = organic_data.get('position', i)
-                content_data['traffic_percent'] = organic_data.get('traffic_percent', 0)
-                
-                competitors_content.append(content_data)
+        Returns:
+            Lista de dicts con 'level' y 'text'
+        """
+        headings = []
+        
+        for tag in soup.find_all(['h1', 'h2', 'h3', 'h4']):
+            text = tag.get_text(strip=True)
+            if text and len(text) > 2:
+                headings.append({
+                    'level': tag.name,
+                    'text': text[:200]  # Limitar longitud
+                })
+        
+        return headings[:30]  # Máximo 30 headings
     
-    return analysis, competitors_content
+    def validate_api_key(self) -> Tuple[bool, str]:
+        """
+        Valida que la API key de SEMrush sea válida.
+        
+        Returns:
+            Tuple[bool, str]: (es_válida, mensaje)
+        """
+        
+        try:
+            # Hacer una consulta mínima para validar
+            params = {
+                'type': 'phrase_organic',
+                'key': self.api_key,
+                'phrase': 'test',
+                'database': 'us',
+                'display_limit': 1
+            }
+            
+            response = requests.get(
+                SEMRUSH_ORGANIC_RESULTS,
+                params=params,
+                timeout=10
+            )
+            
+            if 'ERROR' in response.text:
+                if 'INVALID KEY' in response.text.upper():
+                    return False, "API key inválida"
+                elif 'LIMIT' in response.text.upper():
+                    return True, "API key válida (límite alcanzado)"
+                else:
+                    return False, f"Error: {response.text[:100]}"
+            
+            return True, "API key válida"
+        
+        except Exception as e:
+            return False, f"Error de conexión: {str(e)}"
 
 
 # ============================================================================
-# CÁLCULO DE POTENCIAL
+# FUNCIONES DE UTILIDAD
 # ============================================================================
 
-def calculate_keyword_potential(
-    semrush_data: Optional[Dict],
-    gsc_analysis: Optional[Dict]
-) -> Dict:
+def get_semrush_client(api_key: Optional[str] = None) -> Optional[SEMrushClient]:
     """
-    Calcula el potencial de una keyword combinando SEMrush + GSC.
-    
-    Métricas:
-    - opportunity_score: 0-100, qué tan buena es la oportunidad
-    - traffic_potential: Tráfico mensual estimado si rankeas #1
-    - difficulty_assessment: Evaluación de dificultad
-    - recommendation: Recomendación de acción
+    Obtiene un cliente de SEMrush configurado.
     
     Args:
-        semrush_data: Datos de SEMrush (keyword overview)
-        gsc_analysis: Análisis de GSC (si ya rankeamos)
+        api_key: API key de SEMrush (opcional, usa config si no se proporciona)
         
     Returns:
-        Dict con métricas de potencial
+        SEMrushClient configurado o None si no hay API key
     """
     
-    result = {
-        'opportunity_score': 0,
-        'traffic_potential': 0,
-        'current_traffic': 0,
-        'growth_potential': 0,
-        'difficulty': 'unknown',
-        'recommendation': 'insufficient_data',
-        'details': {}
-    }
+    if not api_key:
+        try:
+            from config.settings import SEMRUSH_API_KEY
+            api_key = SEMRUSH_API_KEY
+        except ImportError:
+            pass
     
-    # Si no hay datos de SEMrush
-    if not semrush_data or not semrush_data.get('metrics'):
-        return result
-    
-    metrics = semrush_data['metrics']
-    volume = metrics.get('volume', 0)
-    kd = metrics.get('difficulty', 50)
-    
-    # Tráfico potencial (CTR estimado por posición)
-    # Posición 1: ~30% CTR, Posición 2: ~15%, etc.
-    ctr_by_position = {1: 0.30, 2: 0.15, 3: 0.10, 4: 0.07, 5: 0.05}
-    
-    # Calcular tráfico potencial si alcanzamos posición 1
-    result['traffic_potential'] = int(volume * 0.30)
-    
-    # Si ya rankeamos (datos de GSC)
-    if gsc_analysis and gsc_analysis.get('has_matches'):
-        current_position = gsc_analysis.get('best_position', 50)
-        current_clicks = gsc_analysis.get('total_clicks', 0)
-        
-        result['current_traffic'] = current_clicks
-        result['current_position'] = current_position
-        
-        # Calcular potencial de crecimiento
-        current_ctr = ctr_by_position.get(int(current_position), 0.02)
-        potential_ctr = 0.30  # Si llegamos a posición 1
-        
-        result['growth_potential'] = int(volume * (potential_ctr - current_ctr))
-    else:
-        result['growth_potential'] = result['traffic_potential']
-    
-    # Evaluar dificultad
-    if kd < 30:
-        result['difficulty'] = 'easy'
-        difficulty_score = 90
-    elif kd < 50:
-        result['difficulty'] = 'medium'
-        difficulty_score = 70
-    elif kd < 70:
-        result['difficulty'] = 'hard'
-        difficulty_score = 40
-    else:
-        result['difficulty'] = 'very_hard'
-        difficulty_score = 20
-    
-    # Calcular opportunity score
-    # Factores: volumen (40%), dificultad (40%), competencia (20%)
-    volume_score = min(100, (volume / 1000) * 100) if volume < 10000 else 100
-    
-    result['opportunity_score'] = int(
-        volume_score * 0.4 +
-        difficulty_score * 0.4 +
-        (100 - metrics.get('competition', 0.5) * 100) * 0.2
-    )
-    
-    # Generar recomendación
-    if result['opportunity_score'] >= 70 and kd < 50:
-        result['recommendation'] = 'high_priority'
-        result['recommendation_text'] = '🟢 Alta prioridad: Buen volumen y dificultad manejable'
-    elif result['opportunity_score'] >= 50:
-        result['recommendation'] = 'medium_priority'
-        result['recommendation_text'] = '🟡 Prioridad media: Evaluar competencia antes de invertir'
-    elif volume > 500:
-        result['recommendation'] = 'long_term'
-        result['recommendation_text'] = '🔵 Largo plazo: Alto volumen pero difícil, requiere estrategia'
-    else:
-        result['recommendation'] = 'low_priority'
-        result['recommendation_text'] = '⚪ Baja prioridad: Poco volumen o muy difícil'
-    
-    # Detalles adicionales
-    result['details'] = {
-        'monthly_volume': volume,
-        'keyword_difficulty': kd,
-        'cpc': metrics.get('cpc', 0),
-        'competition': metrics.get('competition', 0)
-    }
-    
-    return result
-
-
-# ============================================================================
-# VALIDACIÓN DE API KEY
-# ============================================================================
-
-def validate_semrush_api_key() -> bool:
-    """
-    Valida que la API key de SEMrush funcione.
-    
-    Returns:
-        bool: True si la API key es válida
-    """
-    
-    if not SEMRUSH_API_KEY:
-        return False
+    if not api_key:
+        return None
     
     try:
-        # Hacer una petición simple de prueba
-        params = {
-            'type': 'phrase_this',
-            'key': SEMRUSH_API_KEY,
-            'phrase': 'test',
-            'database': 'us',
-            'export_columns': 'Ph'
-        }
-        
-        response = requests.get(SEMRUSH_BASE_URL, params=params, timeout=10)
-        
-        # Si devuelve error de API key
-        if 'ERROR' in response.text and 'API key' in response.text:
-            return False
-        
-        return response.status_code == 200
+        from config.settings import SEMRUSH_DATABASE
+        database = SEMRUSH_DATABASE
+    except ImportError:
+        database = 'es'
     
-    except:
+    return SEMrushClient(api_key=api_key, database=database)
+
+
+def format_competitors_for_display(competitors: List[CompetitorData]) -> List[Dict]:
+    """
+    Formatea los competidores para mostrar en la UI.
+    
+    Args:
+        competitors: Lista de CompetitorData
+        
+    Returns:
+        Lista de dicts formateados para la UI
+    """
+    
+    formatted = []
+    
+    for comp in competitors:
+        formatted.append({
+            'url': comp.url,
+            'title': comp.title or 'Sin título',
+            'domain': comp.domain,
+            'position': comp.position,
+            'ranking_position': comp.position,
+            'word_count': comp.word_count,
+            'content': comp.content,
+            'headings': comp.headings,
+            'meta_description': comp.meta_description,
+            'scrape_success': comp.scrape_success,
+            'error': comp.error_message if not comp.scrape_success else None
+        })
+    
+    return formatted
+
+
+def is_semrush_available() -> bool:
+    """
+    Verifica si SEMrush está configurado y disponible.
+    
+    Returns:
+        bool: True si SEMrush está disponible
+    """
+    
+    try:
+        from config.settings import SEMRUSH_API_KEY, SEMRUSH_ENABLED
+        return bool(SEMRUSH_API_KEY) and SEMRUSH_ENABLED
+    except ImportError:
         return False
 
 
 # ============================================================================
-# CONSTANTES
+# CONSTANTES Y CONFIGURACIÓN
 # ============================================================================
 
-__version__ = "4.1.1"
-
-# Mapeo de dificultad a texto
-DIFFICULTY_LABELS = {
-    'easy': '🟢 Fácil (KD < 30)',
-    'medium': '🟡 Media (KD 30-50)',
-    'hard': '🟠 Difícil (KD 50-70)',
-    'very_hard': '🔴 Muy difícil (KD > 70)',
-    'unknown': '⚪ Desconocida'
-}
-
-# Mapeo de recomendación a color
-RECOMMENDATION_COLORS = {
-    'high_priority': 'green',
-    'medium_priority': 'orange',
-    'long_term': 'blue',
-    'low_priority': 'gray',
-    'insufficient_data': 'gray'
-}
+# Versión del módulo
+__version__ = "4.2.0"
