@@ -13,6 +13,7 @@ Este módulo proporciona:
 - Validación exhaustiva de URLs (seguridad, formato, dominios)
 - Sistema de reintentos configurable
 - Protección contra SSRF y URLs maliciosas
+- Parser HTML consistente vía html_utils
 
 Autor: PcComponentes - Product Discovery & Content
 """
@@ -54,6 +55,30 @@ except ImportError as e:
     _url_validator_available = False
 
 # ============================================================================
+# IMPORTS DE HTML UTILS
+# ============================================================================
+
+try:
+    from utils.html_utils import (
+        HTMLParser,
+        get_html_parser,
+        get_parser as get_bs4_parser,
+        is_bs4_available as check_bs4_available,
+        extract_content as html_extract_content,
+        extract_text as html_extract_text,
+        sanitize_html,
+        clean_html,
+        extract_meta_tags as html_extract_meta_tags,
+        get_word_count,
+        strip_tags,
+        ExtractedContent,
+    )
+    _html_utils_available = True
+except ImportError as e:
+    logger.warning(f"html_utils no disponible: {e}")
+    _html_utils_available = False
+
+# ============================================================================
 # IMPORTS CON MANEJO DE ERRORES
 # ============================================================================
 
@@ -66,12 +91,19 @@ except ImportError as e:
     logger.error(f"No se pudo importar requests: {e}")
     _requests_available = False
 
-try:
-    from bs4 import BeautifulSoup
-    _bs4_available = True
-except ImportError as e:
-    logger.warning(f"BeautifulSoup no disponible: {e}")
-    _bs4_available = False
+# BeautifulSoup - usar html_utils si está disponible
+if _html_utils_available:
+    _bs4_available = check_bs4_available()
+    _bs4_parser = get_bs4_parser() if _bs4_available else 'html.parser'
+else:
+    try:
+        from bs4 import BeautifulSoup
+        _bs4_available = True
+        _bs4_parser = 'html.parser'  # Parser por defecto
+    except ImportError as e:
+        logger.warning(f"BeautifulSoup no disponible: {e}")
+        _bs4_available = False
+        _bs4_parser = None
 
 try:
     from config.settings import (
@@ -654,7 +686,7 @@ class WebScraper:
     
     def _extract_content(self, html: str) -> Dict[str, str]:
         """
-        Extrae contenido principal de HTML.
+        Extrae contenido principal de HTML usando parser consistente.
         
         Args:
             html: HTML completo de la página
@@ -662,11 +694,26 @@ class WebScraper:
         Returns:
             Dict con 'content', 'title', 'meta_description'
         """
+        # Usar html_utils si está disponible (parser consistente)
+        if _html_utils_available:
+            try:
+                extracted = html_extract_content(html)
+                return {
+                    'content': extracted.text,
+                    'title': extracted.title,
+                    'meta_description': extracted.meta_description
+                }
+            except Exception as e:
+                logger.warning(f"Error en html_utils, usando fallback: {e}")
+        
+        # Fallback con BeautifulSoup directo
         if not _bs4_available:
-            return {'content': html, 'title': '', 'meta_description': ''}
+            return self._extract_content_regex(html)
         
         try:
-            soup = BeautifulSoup(html, 'html.parser')
+            # Usar el parser consistente detectado
+            from bs4 import BeautifulSoup
+            soup = BeautifulSoup(html, _bs4_parser)
             
             # Extraer título
             title = ""
@@ -710,7 +757,53 @@ class WebScraper:
         
         except Exception as e:
             logger.warning(f"Error extrayendo contenido: {e}")
-            return {'content': html, 'title': '', 'meta_description': ''}
+            return self._extract_content_regex(html)
+    
+    def _extract_content_regex(self, html: str) -> Dict[str, str]:
+        """
+        Extrae contenido usando regex (fallback sin BeautifulSoup).
+        
+        Args:
+            html: String HTML
+            
+        Returns:
+            Dict con contenido extraído
+        """
+        import html as html_module
+        
+        # Eliminar scripts y styles
+        html_clean = re.sub(r'<script[^>]*>.*?</script>', '', html, flags=re.DOTALL | re.IGNORECASE)
+        html_clean = re.sub(r'<style[^>]*>.*?</style>', '', html_clean, flags=re.DOTALL | re.IGNORECASE)
+        
+        # Extraer título
+        title = ""
+        title_match = re.search(r'<title[^>]*>(.*?)</title>', html, re.IGNORECASE | re.DOTALL)
+        if title_match:
+            title = html_module.unescape(title_match.group(1).strip())
+        
+        # Extraer meta description
+        meta_description = ""
+        meta_match = re.search(
+            r'<meta[^>]*name=["\']description["\'][^>]*content=["\']([^"\']*)["\']',
+            html, re.IGNORECASE
+        )
+        if meta_match:
+            meta_description = html_module.unescape(meta_match.group(1).strip())
+        
+        # Eliminar todos los tags
+        content = re.sub(r'<[^>]+>', ' ', html_clean)
+        
+        # Decodificar entidades HTML
+        content = html_module.unescape(content)
+        
+        # Limpiar espacios
+        content = re.sub(r'\s+', ' ', content).strip()
+        
+        return {
+            'content': content,
+            'title': title,
+            'meta_description': meta_description
+        }
     
     def _simplify_error(self, error: Exception) -> str:
         """Simplifica mensaje de error para el usuario."""
@@ -1016,7 +1109,9 @@ def extract_product_info(html: str) -> Dict[str, Any]:
         return {'error': 'BeautifulSoup no disponible'}
     
     try:
-        soup = BeautifulSoup(html, 'html.parser')
+        # Usar parser consistente
+        from bs4 import BeautifulSoup
+        soup = BeautifulSoup(html, _bs4_parser)
         
         # Buscar título del producto
         title = ""
@@ -1063,6 +1158,13 @@ def extract_page_content(html: str) -> str:
     Returns:
         Texto limpio
     """
+    # Usar html_utils si está disponible
+    if _html_utils_available:
+        try:
+            return html_extract_text(html)
+        except Exception as e:
+            logger.warning(f"Error en html_utils extract_text: {e}")
+    
     if not _bs4_available:
         # Fallback: eliminar tags con regex
         text = re.sub(r'<script[^>]*>.*?</script>', '', html, flags=re.DOTALL)
@@ -1072,7 +1174,9 @@ def extract_page_content(html: str) -> str:
         return text.strip()
     
     try:
-        soup = BeautifulSoup(html, 'html.parser')
+        # Usar parser consistente
+        from bs4 import BeautifulSoup
+        soup = BeautifulSoup(html, _bs4_parser)
         
         # Eliminar scripts y estilos
         for tag in soup(['script', 'style', 'nav', 'header', 'footer']):
@@ -1099,11 +1203,20 @@ def extract_meta_tags(html: str) -> Dict[str, str]:
     Returns:
         Dict con meta tags
     """
+    # Usar html_utils si está disponible
+    if _html_utils_available:
+        try:
+            return html_extract_meta_tags(html)
+        except Exception as e:
+            logger.warning(f"Error en html_utils extract_meta_tags: {e}")
+    
     if not _bs4_available:
         return {}
     
     try:
-        soup = BeautifulSoup(html, 'html.parser')
+        # Usar parser consistente
+        from bs4 import BeautifulSoup
+        soup = BeautifulSoup(html, _bs4_parser)
         
         meta_tags = {}
         
@@ -1132,6 +1245,13 @@ def extract_meta_tags(html: str) -> Dict[str, str]:
         if robots:
             meta_tags['robots'] = robots.get('content', '')
         
+        # OG tags
+        for og_tag in soup.find_all('meta', property=re.compile(r'^og:')):
+            prop = og_tag.get('property', '')
+            content = og_tag.get('content', '')
+            if prop and content:
+                meta_tags[prop] = content
+        
         return meta_tags
     
     except Exception as e:
@@ -1150,7 +1270,14 @@ def clean_html_content(html: str, max_length: Optional[int] = None) -> str:
     Returns:
         Texto limpio
     """
-    text = extract_page_content(html)
+    # Usar html_utils si está disponible
+    if _html_utils_available:
+        try:
+            text = html_extract_text(html)
+        except Exception:
+            text = extract_page_content(html)
+    else:
+        text = extract_page_content(html)
     
     if max_length and len(text) > max_length:
         text = text[:max_length] + "..."
@@ -1236,14 +1363,26 @@ def is_scraper_available() -> bool:
 
 def get_scraper_info() -> Dict[str, Any]:
     """Obtiene información del scraper."""
-    return {
+    info = {
         'available': _requests_available,
         'bs4_available': _bs4_available,
+        'bs4_parser': _bs4_parser,
+        'html_utils_available': _html_utils_available,
         'url_validator_available': _url_validator_available,
         'default_timeout': DEFAULT_TIMEOUT,
         'default_max_retries': DEFAULT_MAX_RETRIES,
         'version': __version__,
     }
+    
+    # Añadir parsers disponibles si html_utils está cargado
+    if _html_utils_available:
+        try:
+            from utils.html_utils import get_available_parsers
+            info['available_parsers'] = get_available_parsers()
+        except Exception:
+            pass
+    
+    return info
 
 
 def validate_urls_for_scraping(urls: List[str]) -> Dict[str, Any]:
