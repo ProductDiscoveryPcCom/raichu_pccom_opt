@@ -1,6 +1,6 @@
 """
 Prompt Templates - PcComponentes Content Generator
-Versión 4.2.0
+Versión 4.3.0
 
 Sistema de templates para prompts de generación de contenido.
 Usa string.Template para evitar problemas con f-strings y llaves dobles.
@@ -10,6 +10,7 @@ Este módulo proporciona:
 - Funciones builder para construir prompts
 - Validación de variables requeridas
 - Soporte para JSON embebido en prompts
+- Sistema mejorado de enlaces con tipos (blog, listado, producto)
 
 IMPORTANTE: Este módulo usa string.Template con sintaxis $variable
 en lugar de f-strings para evitar conflictos con JSON y código.
@@ -32,7 +33,7 @@ logger = logging.getLogger(__name__)
 # VERSIÓN Y CONSTANTES
 # ============================================================================
 
-__version__ = "4.2.0"
+__version__ = "4.3.0"
 
 
 # ============================================================================
@@ -348,7 +349,7 @@ Proporciona el análisis en formato JSON:
 """, name="analysis")
 
 
-# Template para sección de enlaces
+# Template para sección de enlaces (versión simple - compatibilidad)
 LINKS_SECTION_TEMPLATE = SafeTemplate("""
 ENLACES INTERNOS (incluir de forma natural):
 $internal_links
@@ -362,6 +363,67 @@ INSTRUCCIONES DE ENLAZADO:
 - No fuerces enlaces donde no encajen
 - Prioriza enlaces en la primera mitad del contenido
 """, name="links_section")
+
+
+# Template para sección de enlaces mejorados con tipos
+ENHANCED_LINKS_SECTION_TEMPLATE = SafeTemplate("""
+## ENLACES A INCLUIR EN EL CONTENIDO
+
+Incluye estos enlaces de forma natural en el texto, respetando el tipo y contexto de cada uno.
+
+$blog_links_section
+
+$category_links_section
+
+$pdp_links_section
+
+### INSTRUCCIONES DE ENLAZADO:
+1. **Integración natural**: Los enlaces deben fluir con el texto, no parecer forzados
+2. **Contexto apropiado**:
+   - Enlaces a BLOG: en menciones de temas relacionados, guías complementarias
+   - Enlaces a LISTADOS: cuando se recomiende explorar opciones o categorías
+   - Enlaces a PRODUCTOS: en recomendaciones específicas, menciones de productos, CTAs
+3. **Anchor text**: Usa EXACTAMENTE el texto ancla proporcionado para cada enlace
+4. **Distribución**: Reparte los enlaces a lo largo del contenido, no los agrupes
+5. **Prioridad**: Incluye TODOS los enlaces proporcionados
+""", name="enhanced_links_section")
+
+
+# Template para grupo de enlaces de blog
+BLOG_LINKS_GROUP_TEMPLATE = SafeTemplate("""
+### 📝 Enlaces a otros artículos del blog:
+Estos enlaces deben aparecer en contextos donde se mencionen temas relacionados, 
+guías complementarias o información adicional.
+
+$links_list
+""", name="blog_links_group")
+
+
+# Template para grupo de enlaces de categorías/listados
+CATEGORY_LINKS_GROUP_TEMPLATE = SafeTemplate("""
+### 📂 Enlaces a listados/categorías de productos:
+Estos enlaces deben aparecer cuando se mencionen categorías de productos, 
+comparativas generales o recomendaciones de explorar más opciones.
+
+$links_list
+""", name="category_links_group")
+
+
+# Template para grupo de enlaces de productos (PDPs)
+PDP_LINKS_GROUP_TEMPLATE = SafeTemplate("""
+### 🛒 Enlaces a fichas de producto:
+Estos enlaces deben aparecer cuando se mencione un producto específico, 
+en recomendaciones concretas o en CTAs de compra.
+
+$links_list
+""", name="pdp_links_group")
+
+
+# Template para enlace individual mejorado
+ENHANCED_LINK_ITEM_TEMPLATE = SafeTemplate("""
+- **Anchor:** "$anchor_text"
+  **URL:** $url
+""", name="enhanced_link_item")
 
 
 # Template para datos de competidores
@@ -636,7 +698,9 @@ def build_links_section(
     pdp_links: Optional[List[str]] = None
 ) -> str:
     """
-    Construye la sección de enlaces para el prompt.
+    Construye la sección de enlaces para el prompt (versión simple).
+    
+    NOTA: Para enlaces con tipos y anchors, usar build_enhanced_links_section().
     
     Args:
         internal_links: Lista de enlaces internos
@@ -661,6 +725,139 @@ def build_links_section(
         internal_links=internal_str,
         pdp_links=pdp_str
     )
+
+
+def build_enhanced_links_section(
+    enhanced_links: Optional[List[Any]] = None
+) -> str:
+    """
+    Construye la sección de enlaces mejorados con tipos y anchors.
+    
+    Args:
+        enhanced_links: Lista de EnhancedLink o dicts con:
+            - url: URL del enlace
+            - anchor: Texto ancla
+            - link_type: Tipo de enlace ('blog', 'category', 'pdp')
+            
+    Returns:
+        Sección de enlaces formateada para el prompt
+    """
+    if not enhanced_links:
+        return "(Sin enlaces especificados)"
+    
+    # Agrupar enlaces por tipo
+    blog_links = []
+    category_links = []
+    pdp_links = []
+    
+    for link in enhanced_links:
+        # Soportar tanto objetos como dicts
+        if hasattr(link, 'link_type'):
+            # Es un objeto EnhancedLink
+            link_type = link.link_type.value if hasattr(link.link_type, 'value') else str(link.link_type)
+            url = link.url
+            anchor = link.anchor
+        else:
+            # Es un dict
+            link_type = link.get('type', 'blog')
+            url = link.get('url', '')
+            anchor = link.get('anchor', '')
+        
+        link_item = ENHANCED_LINK_ITEM_TEMPLATE.render(
+            anchor_text=anchor,
+            url=url
+        )
+        
+        if link_type == 'blog':
+            blog_links.append(link_item)
+        elif link_type == 'category':
+            category_links.append(link_item)
+        elif link_type == 'pdp':
+            pdp_links.append(link_item)
+        else:
+            # Por defecto, añadir como blog
+            blog_links.append(link_item)
+    
+    # Construir secciones
+    blog_section = ""
+    if blog_links:
+        blog_section = BLOG_LINKS_GROUP_TEMPLATE.render(
+            links_list="\n".join(blog_links)
+        )
+    
+    category_section = ""
+    if category_links:
+        category_section = CATEGORY_LINKS_GROUP_TEMPLATE.render(
+            links_list="\n".join(category_links)
+        )
+    
+    pdp_section = ""
+    if pdp_links:
+        pdp_section = PDP_LINKS_GROUP_TEMPLATE.render(
+            links_list="\n".join(pdp_links)
+        )
+    
+    # Si no hay ningún enlace en ninguna categoría
+    if not blog_section and not category_section and not pdp_section:
+        return "(Sin enlaces especificados)"
+    
+    return ENHANCED_LINKS_SECTION_TEMPLATE.render(
+        blog_links_section=blog_section or "(Sin enlaces de blog)",
+        category_links_section=category_section or "(Sin enlaces de listados)",
+        pdp_links_section=pdp_section or "(Sin enlaces de productos)"
+    )
+
+
+def format_enhanced_links_for_prompt(
+    enhanced_links: Optional[List[Any]] = None,
+    use_simple_format: bool = False
+) -> str:
+    """
+    Formatea enlaces mejorados para incluir en prompts.
+    
+    Función de conveniencia que detecta el formato de entrada y
+    genera el texto apropiado para el prompt.
+    
+    Args:
+        enhanced_links: Lista de enlaces (EnhancedLink o dicts)
+        use_simple_format: Si True, usa formato simple sin templates
+        
+    Returns:
+        String formateado para el prompt
+    """
+    if not enhanced_links:
+        return ""
+    
+    if use_simple_format:
+        # Formato simple (más compacto)
+        lines = ["ENLACES A INCLUIR:", ""]
+        
+        for link in enhanced_links:
+            if hasattr(link, 'link_type'):
+                link_type = link.link_type.value if hasattr(link.link_type, 'value') else str(link.link_type)
+                url = link.url
+                anchor = link.anchor
+            else:
+                link_type = link.get('type', 'blog')
+                url = link.get('url', '')
+                anchor = link.get('anchor', '')
+            
+            type_names = {
+                'blog': 'Blog',
+                'category': 'Listado',
+                'pdp': 'Producto'
+            }
+            type_name = type_names.get(link_type, 'Enlace')
+            
+            lines.append(f"- [{anchor}]({url}) → Tipo: {type_name}")
+        
+        lines.append("")
+        lines.append("Incluye TODOS estos enlaces de forma natural en el contenido.")
+        
+        return "\n".join(lines)
+    
+    # Formato completo con templates
+    return build_enhanced_links_section(enhanced_links)
 
 
 def build_competitor_section(
@@ -1013,6 +1210,11 @@ def _register_all_templates():
         ("rewrite", REWRITE_TEMPLATE._raw),
         ("analysis", ANALYSIS_TEMPLATE._raw),
         ("links_section", LINKS_SECTION_TEMPLATE._raw),
+        ("enhanced_links_section", ENHANCED_LINKS_SECTION_TEMPLATE._raw),
+        ("blog_links_group", BLOG_LINKS_GROUP_TEMPLATE._raw),
+        ("category_links_group", CATEGORY_LINKS_GROUP_TEMPLATE._raw),
+        ("pdp_links_group", PDP_LINKS_GROUP_TEMPLATE._raw),
+        ("enhanced_link_item", ENHANCED_LINK_ITEM_TEMPLATE._raw),
         ("competitor", COMPETITOR_TEMPLATE._raw),
         ("html_structure", HTML_STRUCTURE_TEMPLATE._raw),
         ("faqs", FAQS_TEMPLATE._raw),
@@ -1057,6 +1259,11 @@ __all__ = [
     'REWRITE_TEMPLATE',
     'ANALYSIS_TEMPLATE',
     'LINKS_SECTION_TEMPLATE',
+    'ENHANCED_LINKS_SECTION_TEMPLATE',
+    'BLOG_LINKS_GROUP_TEMPLATE',
+    'CATEGORY_LINKS_GROUP_TEMPLATE',
+    'PDP_LINKS_GROUP_TEMPLATE',
+    'ENHANCED_LINK_ITEM_TEMPLATE',
     'COMPETITOR_TEMPLATE',
     'HTML_STRUCTURE_TEMPLATE',
     'FAQS_TEMPLATE',
@@ -1072,6 +1279,8 @@ __all__ = [
     'build_rewrite_prompt',
     'build_analysis_prompt',
     'build_links_section',
+    'build_enhanced_links_section',
+    'format_enhanced_links_for_prompt',
     'build_competitor_section',
     'build_faqs_section',
     'build_callout',
