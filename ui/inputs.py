@@ -1,6 +1,6 @@
 """
 UI Inputs - PcComponentes Content Generator
-Versión 4.2.0
+Versión 4.3.0
 
 Módulo de componentes de entrada para la interfaz Streamlit.
 Incluye validación robusta, manejo de errores específicos,
@@ -11,6 +11,7 @@ Este módulo proporciona:
 - Validación de datos de entrada
 - Manejo de errores específico por tipo de input
 - Gestión de estado del formulario
+- Sistema mejorado de enlaces con tipos
 
 Autor: PcComponentes - Product Discovery & Content
 """
@@ -18,7 +19,7 @@ Autor: PcComponentes - Product Discovery & Content
 import re
 import streamlit as st
 from typing import Dict, List, Optional, Tuple, Any, Union
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from enum import Enum
 from urllib.parse import urlparse
 import logging
@@ -73,7 +74,7 @@ except ImportError as e:
 # VERSIÓN Y CONSTANTES
 # ============================================================================
 
-__version__ = "4.2.0"
+__version__ = "4.3.0"
 
 # Patrones de validación
 URL_PATTERN = re.compile(
@@ -92,60 +93,50 @@ MIN_KEYWORD_LENGTH = 2
 MAX_KEYWORD_LENGTH = 100
 MAX_URL_LENGTH = 2000
 MAX_LINKS_PER_TYPE = 10
+MAX_ANCHOR_LENGTH = 150
 
 # Mensajes de error
 ERROR_MESSAGES = {
     'keyword_empty': 'La keyword no puede estar vacía',
     'keyword_too_short': f'La keyword debe tener al menos {MIN_KEYWORD_LENGTH} caracteres',
     'keyword_too_long': f'La keyword no puede exceder {MAX_KEYWORD_LENGTH} caracteres',
-    'keyword_invalid_chars': 'La keyword contiene caracteres no permitidos',
+    'keyword_invalid': 'La keyword contiene caracteres no válidos',
     'url_empty': 'La URL no puede estar vacía',
     'url_invalid_format': 'El formato de la URL no es válido',
     'url_too_long': f'La URL no puede exceder {MAX_URL_LENGTH} caracteres',
     'url_not_pccomponentes': 'La URL debe ser de PcComponentes',
-    'length_out_of_range': f'La longitud debe estar entre {MIN_CONTENT_LENGTH} y {MAX_CONTENT_LENGTH}',
     'links_invalid_format': 'El formato de los enlaces no es válido',
-    'competitors_limit': f'Máximo {MAX_COMPETITORS} URLs de competidores',
+    'anchor_too_long': f'El anchor text no puede exceder {MAX_ANCHOR_LENGTH} caracteres',
 }
 
 
 # ============================================================================
-# EXCEPCIONES PERSONALIZADAS
+# EXCEPCIONES
 # ============================================================================
 
 class InputValidationError(Exception):
-    """Excepción base para errores de validación de inputs."""
+    """Excepción base para errores de validación de input."""
     
-    def __init__(self, message: str, field: str, value: Any = None):
+    def __init__(self, message: str, field: str = None, value: Any = None):
         super().__init__(message)
         self.message = message
         self.field = field
         self.value = value
-    
-    def __str__(self):
-        return f"[{self.field}] {self.message}"
 
 
 class KeywordValidationError(InputValidationError):
     """Error de validación de keyword."""
     
-    def __init__(self, message: str, value: str = None):
+    def __init__(self, message: str, value: Any = None):
         super().__init__(message, field='keyword', value=value)
 
 
 class URLValidationError(InputValidationError):
     """Error de validación de URL."""
     
-    def __init__(self, message: str, value: str = None, url_type: str = 'url'):
+    def __init__(self, message: str, value: Any = None, url_type: str = 'url'):
         super().__init__(message, field=url_type, value=value)
         self.url_type = url_type
-
-
-class LengthValidationError(InputValidationError):
-    """Error de validación de longitud."""
-    
-    def __init__(self, message: str, value: int = None):
-        super().__init__(message, field='length', value=value)
 
 
 class LinksValidationError(InputValidationError):
@@ -156,99 +147,188 @@ class LinksValidationError(InputValidationError):
         self.link_type = link_type
 
 
-class ArquetipoValidationError(InputValidationError):
-    """Error de validación de arquetipo."""
-    
-    def __init__(self, message: str, value: str = None):
-        super().__init__(message, field='arquetipo', value=value)
-
-
 # ============================================================================
 # ENUMS Y DATA CLASSES
 # ============================================================================
 
-class InputMode(Enum):
-    """Modos de entrada disponibles."""
-    NEW_CONTENT = "new"
-    REWRITE = "rewrite"
-
-
 class LinkType(Enum):
-    """Tipos de enlaces."""
-    INTERNAL = "internal"
-    PDP = "pdp"
-    EXTERNAL = "external"
+    """Tipos de enlaces para el contenido."""
+    BLOG = "blog"           # Otro post de blog
+    CATEGORY = "category"   # Listado de productos
+    PDP = "pdp"             # Ficha de producto
+
+
+# Configuración de tipos de enlaces para mostrar en UI
+LINK_TYPE_CONFIG = {
+    LinkType.BLOG: {
+        'name': '📝 Post de Blog',
+        'description': 'Enlace a otro artículo del blog',
+        'icon': '📝',
+        'color': '#4A90D9',
+    },
+    LinkType.CATEGORY: {
+        'name': '📂 Listado de Productos',
+        'description': 'Enlace a una categoría o listado',
+        'icon': '📂',
+        'color': '#7CB342',
+    },
+    LinkType.PDP: {
+        'name': '🛒 Ficha de Producto',
+        'description': 'Enlace a una página de producto',
+        'icon': '🛒',
+        'color': '#FF7043',
+    },
+}
+
+
+@dataclass
+class EnhancedLink:
+    """
+    Representa un enlace mejorado con contexto.
+    
+    Attributes:
+        url: URL del enlace
+        anchor: Texto ancla para el enlace
+        link_type: Tipo de enlace (blog, category, pdp)
+    """
+    url: str
+    anchor: str
+    link_type: LinkType
+    
+    def to_dict(self) -> Dict[str, str]:
+        """Convierte a diccionario."""
+        return {
+            'url': self.url,
+            'anchor': self.anchor,
+            'type': self.link_type.value,
+            'type_name': LINK_TYPE_CONFIG[self.link_type]['name'],
+        }
+    
+    @classmethod
+    def from_dict(cls, data: Dict[str, str]) -> 'EnhancedLink':
+        """Crea desde diccionario."""
+        link_type = LinkType(data.get('type', 'blog'))
+        return cls(
+            url=data.get('url', ''),
+            anchor=data.get('anchor', ''),
+            link_type=link_type
+        )
+    
+    def format_for_prompt(self) -> str:
+        """Formatea el enlace para incluir en prompts."""
+        type_desc = {
+            LinkType.BLOG: "otro artículo del blog",
+            LinkType.CATEGORY: "listado/categoría de productos",
+            LinkType.PDP: "ficha de producto",
+        }
+        return f'- [{self.anchor}]({self.url}) → Tipo: {type_desc[self.link_type]}'
 
 
 @dataclass
 class ValidationResult:
     """Resultado de una validación."""
     is_valid: bool
-    value: Any
+    value: Any = None
     error: Optional[str] = None
-    warnings: Optional[List[str]] = None
+    warnings: List[str] = field(default_factory=list)
 
 
 @dataclass
 class FormData:
-    """Datos del formulario de entrada."""
+    """Datos del formulario de generación."""
     keyword: str
-    pdp_url: Optional[str] = None
     target_length: int = DEFAULT_CONTENT_LENGTH
     arquetipo: str = 'GC'
     mode: str = 'new'
+    pdp_url: Optional[str] = None
     competitor_urls: Optional[List[str]] = None
+    # Enlaces mejorados (nuevo sistema)
+    enhanced_links: Optional[List[EnhancedLink]] = None
+    # Mantener compatibilidad con sistema anterior
     internal_links: Optional[List[str]] = None
     pdp_links: Optional[List[str]] = None
     additional_instructions: Optional[str] = None
+    
+    def get_links_by_type(self, link_type: LinkType) -> List[EnhancedLink]:
+        """Obtiene enlaces filtrados por tipo."""
+        if not self.enhanced_links:
+            return []
+        return [link for link in self.enhanced_links if link.link_type == link_type]
+    
+    def get_all_links_for_prompt(self) -> str:
+        """Formatea todos los enlaces para el prompt."""
+        if not self.enhanced_links:
+            return ""
+        
+        sections = []
+        
+        # Agrupar por tipo
+        blog_links = self.get_links_by_type(LinkType.BLOG)
+        category_links = self.get_links_by_type(LinkType.CATEGORY)
+        pdp_links = self.get_links_by_type(LinkType.PDP)
+        
+        if blog_links:
+            sections.append("**Enlaces a otros artículos del blog:**")
+            for link in blog_links:
+                sections.append(link.format_for_prompt())
+        
+        if category_links:
+            sections.append("\n**Enlaces a listados/categorías de productos:**")
+            for link in category_links:
+                sections.append(link.format_for_prompt())
+        
+        if pdp_links:
+            sections.append("\n**Enlaces a fichas de producto:**")
+            for link in pdp_links:
+                sections.append(link.format_for_prompt())
+        
+        return "\n".join(sections)
+    
+    def to_dict(self) -> Dict[str, Any]:
+        """Convierte a diccionario."""
+        return {
+            'keyword': self.keyword,
+            'target_length': self.target_length,
+            'arquetipo': self.arquetipo,
+            'mode': self.mode,
+            'pdp_url': self.pdp_url,
+            'competitor_urls': self.competitor_urls,
+            'enhanced_links': [link.to_dict() for link in self.enhanced_links] if self.enhanced_links else None,
+            'internal_links': self.internal_links,
+            'pdp_links': self.pdp_links,
+            'additional_instructions': self.additional_instructions,
+        }
 
 
 # ============================================================================
-# FUNCIONES DE VALIDACIÓN ESPECÍFICAS
+# FUNCIONES DE VALIDACIÓN
 # ============================================================================
 
-def validate_keyword(keyword: str) -> ValidationResult:
+def validate_keyword(keyword: str, required: bool = True) -> ValidationResult:
     """
     Valida una keyword de búsqueda.
     
     Args:
         keyword: Keyword a validar
+        required: Si es obligatoria
         
     Returns:
-        ValidationResult con el resultado de la validación
-        
-    Raises:
-        KeywordValidationError: Si la validación falla (solo en modo estricto)
+        ValidationResult con el resultado
     """
     warnings = []
     
-    # Verificar que no sea None
-    if keyword is None:
-        return ValidationResult(
-            is_valid=False,
-            value=None,
-            error=ERROR_MESSAGES['keyword_empty']
-        )
+    if not keyword or not keyword.strip():
+        if required:
+            return ValidationResult(
+                is_valid=False,
+                value="",
+                error=ERROR_MESSAGES['keyword_empty']
+            )
+        return ValidationResult(is_valid=True, value="")
     
-    # Convertir a string y limpiar
-    try:
-        keyword = str(keyword).strip()
-    except (ValueError, TypeError) as e:
-        return ValidationResult(
-            is_valid=False,
-            value=keyword,
-            error=f"No se pudo procesar la keyword: {e}"
-        )
+    keyword = keyword.strip()
     
-    # Verificar que no esté vacía
-    if not keyword:
-        return ValidationResult(
-            is_valid=False,
-            value=keyword,
-            error=ERROR_MESSAGES['keyword_empty']
-        )
-    
-    # Verificar longitud mínima
+    # Validar longitud mínima
     if len(keyword) < MIN_KEYWORD_LENGTH:
         return ValidationResult(
             is_valid=False,
@@ -256,7 +336,7 @@ def validate_keyword(keyword: str) -> ValidationResult:
             error=ERROR_MESSAGES['keyword_too_short']
         )
     
-    # Verificar longitud máxima
+    # Validar longitud máxima
     if len(keyword) > MAX_KEYWORD_LENGTH:
         return ValidationResult(
             is_valid=False,
@@ -264,31 +344,20 @@ def validate_keyword(keyword: str) -> ValidationResult:
             error=ERROR_MESSAGES['keyword_too_long']
         )
     
-    # Verificar caracteres permitidos
-    if not KEYWORD_PATTERN.match(keyword):
-        return ValidationResult(
-            is_valid=False,
-            value=keyword,
-            error=ERROR_MESSAGES['keyword_invalid_chars']
-        )
-    
-    # Advertencias (no bloquean)
-    if len(keyword) < 5:
-        warnings.append("Keywords muy cortas pueden dar resultados genéricos")
-    
-    if keyword.isupper():
-        warnings.append("Considera usar minúsculas para mejor legibilidad")
-        keyword = keyword.lower()
+    # Advertencia para keywords muy largas
+    if len(keyword) > 60:
+        warnings.append("Keywords muy largas pueden afectar el SEO")
     
     return ValidationResult(
         is_valid=True,
         value=keyword,
-        warnings=warnings if warnings else None
+        warnings=warnings
     )
 
 
 def validate_url(
     url: str,
+    required: bool = False,
     require_pccomponentes: bool = False,
     url_type: str = 'url'
 ) -> ValidationResult:
@@ -297,41 +366,32 @@ def validate_url(
     
     Args:
         url: URL a validar
-        require_pccomponentes: Si True, solo acepta URLs de PcComponentes
-        url_type: Tipo de URL para mensajes de error
+        required: Si es obligatoria
+        require_pccomponentes: Si debe ser de PcComponentes
+        url_type: Tipo de URL para mensajes
         
     Returns:
-        ValidationResult con el resultado de la validación
+        ValidationResult con el resultado
     """
     warnings = []
     
-    # Verificar que no sea None
-    if url is None:
-        return ValidationResult(
-            is_valid=False,
-            value=None,
-            error=ERROR_MESSAGES['url_empty']
-        )
+    if not url or not url.strip():
+        if required:
+            return ValidationResult(
+                is_valid=False,
+                value="",
+                error=ERROR_MESSAGES['url_empty']
+            )
+        return ValidationResult(is_valid=True, value="")
     
-    # Convertir a string y limpiar
-    try:
-        url = str(url).strip()
-    except (ValueError, TypeError) as e:
-        return ValidationResult(
-            is_valid=False,
-            value=url,
-            error=f"No se pudo procesar la URL: {e}"
-        )
+    url = url.strip()
     
-    # Verificar que no esté vacía
-    if not url:
-        return ValidationResult(
-            is_valid=False,
-            value=url,
-            error=ERROR_MESSAGES['url_empty']
-        )
+    # Añadir https:// si no tiene protocolo
+    if not url.startswith(('http://', 'https://')):
+        url = 'https://' + url
+        warnings.append("Se añadió https:// automáticamente")
     
-    # Verificar longitud máxima
+    # Validar longitud
     if len(url) > MAX_URL_LENGTH:
         return ValidationResult(
             is_valid=False,
@@ -339,12 +399,7 @@ def validate_url(
             error=ERROR_MESSAGES['url_too_long']
         )
     
-    # Añadir protocolo si falta
-    if not url.startswith(('http://', 'https://')):
-        url = 'https://' + url
-        warnings.append("Se añadió 'https://' automáticamente")
-    
-    # Validar formato de URL
+    # Validar formato
     if not URL_PATTERN.match(url):
         return ValidationResult(
             is_valid=False,
@@ -352,115 +407,113 @@ def validate_url(
             error=ERROR_MESSAGES['url_invalid_format']
         )
     
-    # Parsear URL para validaciones adicionales
-    try:
-        parsed = urlparse(url)
-    except ValueError as e:
-        return ValidationResult(
-            is_valid=False,
-            value=url,
-            error=f"Error al parsear URL: {e}"
-        )
-    
-    # Verificar dominio de PcComponentes si es requerido
+    # Validar dominio PcComponentes si es requerido
     if require_pccomponentes:
-        domain = parsed.netloc.lower()
-        if not any(pcc_domain in domain for pcc_domain in PCCOMPONENTES_DOMAINS):
-            return ValidationResult(
-                is_valid=False,
-                value=url,
-                error=ERROR_MESSAGES['url_not_pccomponentes']
-            )
-    
-    # Advertencias
-    if parsed.scheme == 'http':
-        warnings.append("Considera usar HTTPS para mayor seguridad")
+        try:
+            parsed = urlparse(url)
+            domain = parsed.netloc.lower()
+            
+            is_pcc = any(pcc in domain for pcc in PCCOMPONENTES_DOMAINS)
+            
+            if not is_pcc:
+                return ValidationResult(
+                    is_valid=False,
+                    value=url,
+                    error=ERROR_MESSAGES['url_not_pccomponentes']
+                )
+        except Exception:
+            pass
     
     return ValidationResult(
         is_valid=True,
         value=url,
-        warnings=warnings if warnings else None
+        warnings=warnings
     )
 
 
-def validate_length(length: Union[int, str, float]) -> ValidationResult:
+def validate_anchor_text(anchor: str) -> ValidationResult:
     """
-    Valida la longitud objetivo del contenido.
+    Valida un texto de anchor.
     
     Args:
-        length: Longitud a validar (puede ser int, str o float)
+        anchor: Texto anchor a validar
         
     Returns:
-        ValidationResult con el resultado de la validación
+        ValidationResult con el resultado
     """
-    # Convertir a entero
-    try:
-        if isinstance(length, str):
-            length = int(length.strip())
-        elif isinstance(length, float):
-            length = int(length)
-        else:
-            length = int(length)
-    except (ValueError, TypeError) as e:
+    if not anchor or not anchor.strip():
         return ValidationResult(
             is_valid=False,
-            value=length,
-            error=f"La longitud debe ser un número válido: {e}"
+            value="",
+            error="El texto ancla no puede estar vacío"
         )
     
-    # Verificar rango
-    if length < MIN_CONTENT_LENGTH or length > MAX_CONTENT_LENGTH:
+    anchor = anchor.strip()
+    
+    if len(anchor) > MAX_ANCHOR_LENGTH:
         return ValidationResult(
             is_valid=False,
-            value=length,
-            error=ERROR_MESSAGES['length_out_of_range']
+            value=anchor,
+            error=ERROR_MESSAGES['anchor_too_long']
         )
     
     warnings = []
     
-    # Advertencias por longitudes extremas
-    if length < 800:
-        warnings.append("Longitudes menores a 800 palabras pueden resultar en contenido superficial")
-    elif length > 3000:
-        warnings.append("Longitudes mayores a 3000 palabras pueden requerir más tiempo de generación")
+    # Advertencias SEO
+    if len(anchor) < 3:
+        warnings.append("Anchor muy corto, considera usar texto más descriptivo")
+    
+    if anchor.lower() in ['aquí', 'click aquí', 'leer más', 'ver más', 'enlace']:
+        warnings.append("Evita anchors genéricos, usa texto descriptivo")
     
     return ValidationResult(
         is_valid=True,
-        value=length,
-        warnings=warnings if warnings else None
+        value=anchor,
+        warnings=warnings
     )
 
 
-def validate_arquetipo(arquetipo_code: str) -> ValidationResult:
+def validate_enhanced_link(
+    url: str,
+    anchor: str,
+    link_type: LinkType
+) -> ValidationResult:
     """
-    Valida un código de arquetipo.
+    Valida un enlace mejorado completo.
     
     Args:
-        arquetipo_code: Código del arquetipo (ej: 'GC', 'RV')
+        url: URL del enlace
+        anchor: Texto ancla
+        link_type: Tipo de enlace
         
     Returns:
-        ValidationResult con el resultado de la validación
+        ValidationResult con EnhancedLink si es válido
     """
-    if not arquetipo_code:
-        return ValidationResult(
-            is_valid=False,
-            value=arquetipo_code,
-            error="Debe seleccionar un arquetipo"
-        )
+    warnings = []
     
-    arquetipo_code = str(arquetipo_code).strip().upper()
+    # Validar URL
+    url_result = validate_url(url, required=True)
+    if not url_result.is_valid:
+        return url_result
+    warnings.extend(url_result.warnings)
     
-    if arquetipo_code not in ARQUETIPOS:
-        available = ', '.join(ARQUETIPOS.keys())
-        return ValidationResult(
-            is_valid=False,
-            value=arquetipo_code,
-            error=f"Arquetipo '{arquetipo_code}' no válido. Disponibles: {available}"
-        )
+    # Validar anchor
+    anchor_result = validate_anchor_text(anchor)
+    if not anchor_result.is_valid:
+        return anchor_result
+    warnings.extend(anchor_result.warnings)
+    
+    # Crear enlace
+    enhanced_link = EnhancedLink(
+        url=url_result.value,
+        anchor=anchor_result.value,
+        link_type=link_type
+    )
     
     return ValidationResult(
         is_valid=True,
-        value=arquetipo_code
+        value=enhanced_link,
+        warnings=warnings
     )
 
 
@@ -481,32 +534,27 @@ def validate_links_list(
         ValidationResult con lista de URLs válidas
     """
     if not links_text or not links_text.strip():
-        return ValidationResult(
-            is_valid=True,
-            value=[],
-            warnings=None
-        )
+        return ValidationResult(is_valid=True, value=[])
     
     warnings = []
-    valid_links = []
-    invalid_links = []
     
-    # Separar por líneas
     try:
         lines = links_text.strip().split('\n')
-    except AttributeError as e:
+    except Exception as e:
         return ValidationResult(
             is_valid=False,
             value=[],
             error=f"Error al procesar enlaces: {e}"
         )
     
+    valid_links = []
+    invalid_links = []
+    
     for i, line in enumerate(lines, 1):
         line = line.strip()
         if not line:
             continue
         
-        # Validar cada URL
         url_result = validate_url(line, require_pccomponentes=False, url_type=link_type)
         
         if url_result.is_valid:
@@ -517,23 +565,22 @@ def validate_links_list(
     # Verificar límite
     if len(valid_links) > max_links:
         return ValidationResult(
-            is_valid=False,
+            is_valid=True,
             value=valid_links[:max_links],
             error=f"Máximo {max_links} enlaces de tipo {link_type}. Se encontraron {len(valid_links)}."
         )
     
-    # Agregar advertencias
     if invalid_links:
         warnings.append(f"Se ignoraron {len(invalid_links)} enlaces inválidos")
-        for inv in invalid_links[:3]:  # Mostrar máximo 3
-            warnings.append(f"  - {inv}")
+        for inv in invalid_links[:3]:
+            warnings.append(f"  {inv}")
         if len(invalid_links) > 3:
             warnings.append(f"  ... y {len(invalid_links) - 3} más")
     
     return ValidationResult(
         is_valid=True,
         value=valid_links,
-        warnings=warnings if warnings else None
+        warnings=warnings
     )
 
 
@@ -553,113 +600,108 @@ def validate_competitor_urls(urls_text: str) -> ValidationResult:
         max_links=MAX_COMPETITORS
     )
     
-    # Verificar que no sean de PcComponentes
-    if result.is_valid and result.value:
-        warnings = result.warnings or []
-        filtered_urls = []
-        
-        for url in result.value:
-            try:
-                parsed = urlparse(url)
-                domain = parsed.netloc.lower()
-                
-                if any(pcc in domain for pcc in PCCOMPONENTES_DOMAINS):
-                    warnings.append(f"Se excluyó URL de PcComponentes: {url[:50]}...")
-                else:
-                    filtered_urls.append(url)
-            except ValueError:
-                filtered_urls.append(url)  # Mantener si no se puede parsear
-        
-        return ValidationResult(
-            is_valid=True,
-            value=filtered_urls,
-            warnings=warnings if warnings else None
-        )
+    if not result.is_valid:
+        return result
     
-    return result
+    # Verificar que no sean de PcComponentes
+    valid_urls = []
+    warnings = list(result.warnings)
+    
+    for url in result.value:
+        try:
+            parsed = urlparse(url)
+            domain = parsed.netloc.lower()
+            
+            is_pcc = any(pcc in domain for pcc in PCCOMPONENTES_DOMAINS)
+            
+            if is_pcc:
+                warnings.append(f"Ignorada URL de PcComponentes: {url[:50]}...")
+            else:
+                valid_urls.append(url)
+        except Exception:
+            valid_urls.append(url)
+    
+    return ValidationResult(
+        is_valid=True,
+        value=valid_urls,
+        warnings=warnings
+    )
 
 
 # ============================================================================
-# FUNCIONES DE RENDERIZADO DE INPUTS
+# COMPONENTES DE RENDERIZADO
 # ============================================================================
 
 def render_keyword_input(
     key: str = "keyword_input",
     default_value: str = "",
-    label: str = "🔑 Keyword Principal",
-    help_text: str = "Palabra clave principal para el contenido SEO",
     required: bool = True
 ) -> Tuple[str, Optional[str]]:
     """
-    Renderiza un input de keyword con validación.
+    Renderiza input para keyword.
     
     Args:
-        key: Key única para el widget de Streamlit
+        key: Key única para el widget
         default_value: Valor por defecto
-        label: Etiqueta del input
-        help_text: Texto de ayuda
         required: Si es obligatorio
         
     Returns:
-        Tuple[str, Optional[str]]: (valor, mensaje_error)
+        Tuple[str, Optional[str]]: (keyword, mensaje_error)
     """
-    # Obtener valor guardado en estado
     saved_value = get_form_value('keyword', default_value)
     
-    # Renderizar input
+    label = "🔍 Keyword Principal"
+    if required:
+        label += " *"
+    
     keyword = st.text_input(
         label=label,
         value=saved_value,
         key=key,
-        help=help_text,
-        placeholder="Ej: mejores monitores gaming 2024"
+        help="Palabra clave principal para optimizar el contenido",
+        placeholder="Ej: mejores portátiles gaming 2024"
     )
     
-    # Validar
-    if keyword:
-        result = validate_keyword(keyword)
-        
-        if not result.is_valid:
-            st.error(f"❌ {result.error}")
-            return keyword, result.error
-        
-        if result.warnings:
-            for warning in result.warnings:
-                st.warning(f"⚠️ {warning}")
-        
-        # Guardar en estado
-        save_form_data({'keyword': result.value})
-        return result.value, None
+    result = validate_keyword(keyword, required)
     
-    elif required:
-        return "", "La keyword es obligatoria"
+    if not result.is_valid:
+        st.error(f"❌ {result.error}")
+        return keyword, result.error
     
-    return "", None
+    if result.warnings:
+        for warning in result.warnings:
+            st.warning(f"⚠️ {warning}")
+    
+    save_form_data({'keyword': result.value})
+    return result.value, None
 
 
 def render_url_input(
     key: str = "url_input",
     default_value: str = "",
-    label: str = "🔗 URL del PDP",
-    help_text: str = "URL de la página de producto de PcComponentes",
+    label: str = "🔗 URL",
     required: bool = False,
-    require_pccomponentes: bool = True
+    require_pccomponentes: bool = False,
+    help_text: str = "URL de la página"
 ) -> Tuple[str, Optional[str]]:
     """
-    Renderiza un input de URL con validación.
+    Renderiza input para URL.
     
     Args:
         key: Key única para el widget
         default_value: Valor por defecto
         label: Etiqueta del input
-        help_text: Texto de ayuda
         required: Si es obligatorio
-        require_pccomponentes: Si debe ser URL de PcComponentes
+        require_pccomponentes: Si debe ser de PcComponentes
+        help_text: Texto de ayuda
         
     Returns:
-        Tuple[str, Optional[str]]: (valor, mensaje_error)
+        Tuple[str, Optional[str]]: (url, mensaje_error)
     """
     saved_value = get_form_value('pdp_url', default_value)
+    
+    if required:
+        label += " *"
     
     url = st.text_input(
         label=label,
@@ -669,38 +711,32 @@ def render_url_input(
         placeholder="https://www.pccomponentes.com/..."
     )
     
-    if url:
-        result = validate_url(url, require_pccomponentes=require_pccomponentes)
-        
-        if not result.is_valid:
-            st.error(f"❌ {result.error}")
-            return url, result.error
-        
-        if result.warnings:
-            for warning in result.warnings:
-                st.info(f"ℹ️ {warning}")
-        
+    result = validate_url(url, required, require_pccomponentes)
+    
+    if not result.is_valid:
+        st.error(f"❌ {result.error}")
+        return url, result.error
+    
+    if result.warnings:
+        for warning in result.warnings:
+            st.warning(f"⚠️ {warning}")
+    
+    if result.value:
         save_form_data({'pdp_url': result.value})
-        return result.value, None
     
-    elif required:
-        return "", "La URL es obligatoria"
-    
-    return "", None
+    return result.value, None
 
 
 def render_length_slider(
     key: str = "length_slider",
-    default_value: int = DEFAULT_CONTENT_LENGTH,
-    label: str = "📏 Longitud del Contenido (palabras)"
+    default_value: int = DEFAULT_CONTENT_LENGTH
 ) -> int:
     """
-    Renderiza un slider para seleccionar longitud.
+    Renderiza slider para longitud del contenido.
     
     Args:
         key: Key única para el widget
         default_value: Valor por defecto
-        label: Etiqueta del slider
         
     Returns:
         int: Longitud seleccionada
@@ -708,30 +744,27 @@ def render_length_slider(
     saved_value = get_form_value('target_length', default_value)
     
     # Asegurar que el valor esté en rango
-    try:
-        saved_value = int(saved_value)
-        if saved_value < MIN_CONTENT_LENGTH:
-            saved_value = MIN_CONTENT_LENGTH
-        elif saved_value > MAX_CONTENT_LENGTH:
-            saved_value = MAX_CONTENT_LENGTH
-    except (ValueError, TypeError):
-        saved_value = default_value
+    saved_value = max(MIN_CONTENT_LENGTH, min(saved_value, MAX_CONTENT_LENGTH))
     
     length = st.slider(
-        label=label,
+        label="📏 Longitud Objetivo (palabras)",
         min_value=MIN_CONTENT_LENGTH,
         max_value=MAX_CONTENT_LENGTH,
         value=saved_value,
         step=100,
         key=key,
-        help=f"Rango: {MIN_CONTENT_LENGTH} - {MAX_CONTENT_LENGTH} palabras"
+        help="Número aproximado de palabras para el contenido generado"
     )
     
-    # Mostrar advertencias
+    # Mostrar indicador visual
     if length < 800:
-        st.caption("⚠️ Contenido corto - puede resultar superficial")
-    elif length > 3000:
-        st.caption("⚠️ Contenido largo - mayor tiempo de generación")
+        st.caption("📄 Contenido corto - ideal para descripciones")
+    elif length < 1500:
+        st.caption("📝 Contenido medio - ideal para guías básicas")
+    elif length < 2500:
+        st.caption("📚 Contenido largo - ideal para guías completas")
+    else:
+        st.caption("📖 Contenido muy extenso - ideal para pilares SEO")
     
     save_form_data({'target_length': length})
     return length
@@ -739,50 +772,259 @@ def render_length_slider(
 
 def render_arquetipo_selector(
     key: str = "arquetipo_selector",
-    default_value: str = "GC",
-    label: str = "📋 Tipo de Contenido (Arquetipo)"
+    default_value: str = 'GC'
 ) -> str:
     """
-    Renderiza un selector de arquetipo.
+    Renderiza selector de arquetipo de contenido.
     
     Args:
         key: Key única para el widget
-        default_value: Código de arquetipo por defecto
-        label: Etiqueta del selector
+        default_value: Valor por defecto
         
     Returns:
         str: Código del arquetipo seleccionado
     """
     saved_value = get_form_value('arquetipo', default_value)
+    arquetipo_names = get_arquetipo_names()
     
-    # Obtener opciones
-    try:
-        arquetipo_names = get_arquetipo_names()
-    except Exception as e:
-        logger.error(f"Error al obtener arquetipos: {e}")
-        arquetipo_names = {k: v['name'] for k, v in ARQUETIPOS.items()}
-    
-    # Crear lista de opciones para el selectbox
     options = list(arquetipo_names.keys())
     
-    # Encontrar índice del valor guardado
     try:
-        default_index = options.index(saved_value) if saved_value in options else 0
+        default_index = options.index(saved_value)
     except ValueError:
         default_index = 0
     
-    # Renderizar selectbox
     selected = st.selectbox(
-        label=label,
+        label="📋 Tipo de Contenido",
         options=options,
         index=default_index,
-        format_func=lambda x: f"{x} - {arquetipo_names.get(x, x)}",
+        format_func=lambda x: f"{arquetipo_names.get(x, x)} ({x})",
         key=key,
         help="Selecciona el tipo de contenido a generar"
     )
     
     save_form_data({'arquetipo': selected})
     return selected
+
+
+# ============================================================================
+# SISTEMA MEJORADO DE ENLACES
+# ============================================================================
+
+def _get_links_from_session(key: str = "enhanced_links") -> List[Dict]:
+    """Obtiene enlaces del session state."""
+    if key not in st.session_state:
+        st.session_state[key] = []
+    return st.session_state[key]
+
+
+def _save_links_to_session(links: List[Dict], key: str = "enhanced_links"):
+    """Guarda enlaces en session state."""
+    st.session_state[key] = links
+
+
+def _add_link_to_session(
+    url: str,
+    anchor: str,
+    link_type: str,
+    key: str = "enhanced_links"
+):
+    """Añade un enlace al session state."""
+    links = _get_links_from_session(key)
+    links.append({
+        'url': url,
+        'anchor': anchor,
+        'type': link_type
+    })
+    _save_links_to_session(links, key)
+
+
+def _remove_link_from_session(index: int, key: str = "enhanced_links"):
+    """Elimina un enlace por índice."""
+    links = _get_links_from_session(key)
+    if 0 <= index < len(links):
+        links.pop(index)
+        _save_links_to_session(links, key)
+
+
+def render_enhanced_links_section(
+    key: str = "enhanced_links",
+    title: str = "🔗 Enlaces para el Contenido",
+    expanded: bool = True
+) -> List[EnhancedLink]:
+    """
+    Renderiza sección mejorada de enlaces con tipos.
+    
+    Permite añadir múltiples enlaces sin límite, cada uno con:
+    - URL del enlace
+    - Texto ancla (anchor)
+    - Tipo de enlace (blog, listado, producto)
+    
+    Args:
+        key: Key única para el widget
+        title: Título de la sección
+        expanded: Si el expander está abierto por defecto
+        
+    Returns:
+        List[EnhancedLink]: Lista de enlaces configurados
+    """
+    with st.expander(title, expanded=expanded):
+        st.markdown("""
+        <style>
+        .link-card {
+            background: linear-gradient(135deg, #f8f9fa 0%, #e9ecef 100%);
+            border-radius: 10px;
+            padding: 15px;
+            margin-bottom: 10px;
+            border-left: 4px solid #4A90D9;
+        }
+        .link-type-blog { border-left-color: #4A90D9; }
+        .link-type-category { border-left-color: #7CB342; }
+        .link-type-pdp { border-left-color: #FF7043; }
+        </style>
+        """, unsafe_allow_html=True)
+        
+        st.info("""
+        💡 **Añade los enlaces que quieras incluir en el contenido.**
+        
+        El tipo de enlace ayuda al redactor a entender el contexto y ubicar 
+        cada enlace de forma natural en el texto.
+        """)
+        
+        # Formulario para añadir nuevo enlace
+        st.markdown("##### ➕ Añadir Nuevo Enlace")
+        
+        col1, col2 = st.columns([2, 1])
+        
+        with col1:
+            new_url = st.text_input(
+                "URL del enlace",
+                key=f"{key}_new_url",
+                placeholder="https://www.pccomponentes.com/...",
+                label_visibility="collapsed"
+            )
+        
+        with col2:
+            link_type_options = {
+                'blog': '📝 Post de Blog',
+                'category': '📂 Listado de Productos',
+                'pdp': '🛒 Ficha de Producto'
+            }
+            new_type = st.selectbox(
+                "Tipo",
+                options=list(link_type_options.keys()),
+                format_func=lambda x: link_type_options[x],
+                key=f"{key}_new_type",
+                label_visibility="collapsed"
+            )
+        
+        new_anchor = st.text_input(
+            "Texto ancla (anchor text)",
+            key=f"{key}_new_anchor",
+            placeholder="Ej: mejores monitores gaming, ver producto, guía completa...",
+            help="El texto que aparecerá como enlace en el contenido"
+        )
+        
+        # Botón de añadir
+        add_col1, add_col2, add_col3 = st.columns([1, 1, 2])
+        
+        with add_col1:
+            if st.button("➕ Añadir Enlace", key=f"{key}_add_btn", type="primary"):
+                if new_url and new_anchor:
+                    # Validar
+                    result = validate_enhanced_link(
+                        url=new_url,
+                        anchor=new_anchor,
+                        link_type=LinkType(new_type)
+                    )
+                    
+                    if result.is_valid:
+                        _add_link_to_session(new_url, new_anchor, new_type, key)
+                        st.success("✅ Enlace añadido")
+                        st.rerun()
+                    else:
+                        st.error(f"❌ {result.error}")
+                else:
+                    st.warning("⚠️ Completa URL y texto ancla")
+        
+        with add_col2:
+            if st.button("🗑️ Limpiar Todo", key=f"{key}_clear_btn"):
+                _save_links_to_session([], key)
+                st.rerun()
+        
+        st.markdown("---")
+        
+        # Mostrar enlaces existentes
+        links_data = _get_links_from_session(key)
+        
+        if links_data:
+            st.markdown(f"##### 📋 Enlaces Configurados ({len(links_data)})")
+            
+            for i, link in enumerate(links_data):
+                link_type_str = link.get('type', 'blog')
+                type_config = LINK_TYPE_CONFIG.get(
+                    LinkType(link_type_str),
+                    LINK_TYPE_CONFIG[LinkType.BLOG]
+                )
+                
+                with st.container():
+                    col1, col2, col3 = st.columns([3, 1, 0.5])
+                    
+                    with col1:
+                        st.markdown(f"""
+                        **{type_config['icon']} {link.get('anchor', '')}**  
+                        <small style="color: #666;">{link.get('url', '')[:60]}{'...' if len(link.get('url', '')) > 60 else ''}</small>
+                        """, unsafe_allow_html=True)
+                    
+                    with col2:
+                        st.caption(type_config['name'])
+                    
+                    with col3:
+                        if st.button("🗑️", key=f"{key}_del_{i}", help="Eliminar enlace"):
+                            _remove_link_from_session(i, key)
+                            st.rerun()
+                    
+                    st.markdown("<hr style='margin: 5px 0; opacity: 0.3;'>", unsafe_allow_html=True)
+        else:
+            st.caption("📭 No hay enlaces configurados. Añade enlaces arriba.")
+        
+        # Resumen por tipo
+        if links_data:
+            st.markdown("##### 📊 Resumen")
+            
+            type_counts = {
+                'blog': 0,
+                'category': 0,
+                'pdp': 0
+            }
+            
+            for link in links_data:
+                lt = link.get('type', 'blog')
+                if lt in type_counts:
+                    type_counts[lt] += 1
+            
+            cols = st.columns(3)
+            
+            with cols[0]:
+                st.metric("📝 Posts de Blog", type_counts['blog'])
+            with cols[1]:
+                st.metric("📂 Listados", type_counts['category'])
+            with cols[2]:
+                st.metric("🛒 Productos", type_counts['pdp'])
+    
+    # Convertir a objetos EnhancedLink
+    enhanced_links = []
+    for link in links_data:
+        try:
+            enhanced_links.append(EnhancedLink(
+                url=link.get('url', ''),
+                anchor=link.get('anchor', ''),
+                link_type=LinkType(link.get('type', 'blog'))
+            ))
+        except Exception as e:
+            logger.warning(f"Error creando EnhancedLink: {e}")
+    
+    return enhanced_links
 
 
 def render_links_textarea(
@@ -794,7 +1036,10 @@ def render_links_textarea(
     max_links: int = MAX_LINKS_PER_TYPE
 ) -> Tuple[List[str], Optional[str]]:
     """
-    Renderiza un textarea para múltiples enlaces.
+    Renderiza un textarea para múltiples enlaces (versión simple).
+    
+    NOTA: Esta función se mantiene para compatibilidad.
+    Para nuevas implementaciones usar render_enhanced_links_section().
     
     Args:
         key: Key única para el widget
@@ -898,22 +1143,15 @@ def render_additional_instructions(
         str: Instrucciones adicionales
     """
     instructions = st.text_area(
-        label="📝 Instrucciones Adicionales (Opcional)",
+        label="📝 Instrucciones Adicionales",
         value=default_value,
         key=key,
-        help="Instrucciones específicas para la generación de contenido",
-        placeholder="Ej: Enfocarse en gamers principiantes, mencionar presupuestos bajos...",
-        height=80
+        help="Instrucciones específicas para la generación",
+        placeholder="Ej: Enfocarse en gaming, mencionar ofertas actuales, tono más técnico...",
+        height=100
     )
     
     if instructions:
-        # Limpiar y validar longitud
-        instructions = instructions.strip()
-        
-        if len(instructions) > 1000:
-            st.warning("⚠️ Las instrucciones son muy largas. Se truncarán a 1000 caracteres.")
-            instructions = instructions[:1000]
-        
         save_form_data({'additional_instructions': instructions})
     
     return instructions
@@ -965,25 +1203,14 @@ def render_main_form(mode: str = "new") -> Optional[FormData]:
         if url_error:
             errors.append(url_error)
     
-    # Sección expandible para enlaces
-    with st.expander("🔗 Enlaces (Opcional)", expanded=False):
-        link_col1, link_col2 = st.columns(2)
-        
-        with link_col1:
-            internal_links, _ = render_links_textarea(
-                key="main_internal_links",
-                label="Enlaces Internos",
-                link_type="internal",
-                max_links=5
-            )
-        
-        with link_col2:
-            pdp_links, _ = render_links_textarea(
-                key="main_pdp_links",
-                label="Enlaces a PDPs",
-                link_type="pdp",
-                max_links=3
-            )
+    # =========================================================================
+    # SECCIÓN DE ENLACES MEJORADA
+    # =========================================================================
+    enhanced_links = render_enhanced_links_section(
+        key="main_enhanced_links",
+        title="🔗 Paso 5: Enlaces para el Contenido",
+        expanded=True
+    )
     
     # Competidores (solo en modo rewrite)
     competitor_urls = []
@@ -1017,8 +1244,7 @@ def render_main_form(mode: str = "new") -> Optional[FormData]:
         arquetipo=arquetipo,
         mode=mode,
         competitor_urls=competitor_urls if competitor_urls else None,
-        internal_links=internal_links if internal_links else None,
-        pdp_links=pdp_links if pdp_links else None,
+        enhanced_links=enhanced_links if enhanced_links else None,
         additional_instructions=additional_instructions if additional_instructions else None
     )
 
@@ -1049,44 +1275,116 @@ def render_mode_selector(key: str = "mode_selector") -> str:
 
 
 # ============================================================================
-# UTILIDADES
+# FUNCIONES DE UTILIDAD
 # ============================================================================
 
-def clear_form_state() -> None:
-    """Limpia el estado del formulario."""
+def clear_form_data():
+    """Limpia todos los datos del formulario."""
     keys_to_clear = [
         'keyword', 'pdp_url', 'target_length', 'arquetipo', 'mode',
-        'competitor_urls', 'internal_links', 'pdp_links', 'additional_instructions'
+        'competitor_urls', 'enhanced_links', 'additional_instructions'
     ]
     
     for key in keys_to_clear:
         if key in st.session_state:
             del st.session_state[key]
     
-    logger.info("Estado del formulario limpiado")
+    # Limpiar enlaces mejorados
+    if 'main_enhanced_links' in st.session_state:
+        del st.session_state['main_enhanced_links']
+    
+    save_form_data({})
 
 
 def get_form_summary(form_data: FormData) -> Dict[str, Any]:
     """
-    Obtiene un resumen de los datos del formulario.
+    Genera resumen del formulario para mostrar.
     
     Args:
         form_data: Datos del formulario
         
     Returns:
-        dict: Resumen para mostrar al usuario
+        Dict con resumen
     """
+    arquetipo_names = get_arquetipo_names()
+    
+    # Contar enlaces por tipo
+    links_by_type = {
+        'blog': 0,
+        'category': 0,
+        'pdp': 0
+    }
+    
+    if form_data.enhanced_links:
+        for link in form_data.enhanced_links:
+            lt = link.link_type.value
+            if lt in links_by_type:
+                links_by_type[lt] += 1
+    
+    total_links = sum(links_by_type.values())
+    
     return {
         'Keyword': form_data.keyword,
-        'Longitud objetivo': f"{form_data.target_length} palabras",
-        'Arquetipo': f"{form_data.arquetipo} - {ARQUETIPOS.get(form_data.arquetipo, {}).get('name', form_data.arquetipo)}",
-        'Modo': 'Nuevo contenido' if form_data.mode == 'new' else 'Reescritura',
+        'Tipo': arquetipo_names.get(form_data.arquetipo, form_data.arquetipo),
+        'Longitud': f"{form_data.target_length} palabras",
         'URL PDP': form_data.pdp_url or 'No especificada',
-        'Enlaces internos': len(form_data.internal_links or []),
-        'Enlaces PDP': len(form_data.pdp_links or []),
-        'URLs competidores': len(form_data.competitor_urls or []),
-        'Instrucciones': 'Sí' if form_data.additional_instructions else 'No',
+        'Total Enlaces': total_links,
+        'Enlaces Blog': links_by_type['blog'],
+        'Enlaces Listados': links_by_type['category'],
+        'Enlaces Productos': links_by_type['pdp'],
+        'URLs Competidores': len(form_data.competitor_urls or []),
+        'Modo': 'Nuevo' if form_data.mode == 'new' else 'Reescritura',
     }
+
+
+def format_links_for_prompt(enhanced_links: List[EnhancedLink]) -> str:
+    """
+    Formatea los enlaces mejorados para incluir en el prompt.
+    
+    Args:
+        enhanced_links: Lista de enlaces mejorados
+        
+    Returns:
+        String formateado para el prompt
+    """
+    if not enhanced_links:
+        return ""
+    
+    sections = []
+    
+    # Agrupar por tipo
+    blog_links = [l for l in enhanced_links if l.link_type == LinkType.BLOG]
+    category_links = [l for l in enhanced_links if l.link_type == LinkType.CATEGORY]
+    pdp_links = [l for l in enhanced_links if l.link_type == LinkType.PDP]
+    
+    sections.append("## ENLACES A INCLUIR EN EL CONTENIDO\n")
+    sections.append("Incluye estos enlaces de forma natural en el texto, respetando el tipo y contexto de cada uno:\n")
+    
+    if blog_links:
+        sections.append("### Enlaces a otros artículos del blog:")
+        sections.append("Estos enlaces deben aparecer en contextos donde se mencionen temas relacionados, guías complementarias o información adicional.\n")
+        for link in blog_links:
+            sections.append(f"- **Anchor:** \"{link.anchor}\"")
+            sections.append(f"  **URL:** {link.url}")
+            sections.append("")
+    
+    if category_links:
+        sections.append("### Enlaces a listados/categorías de productos:")
+        sections.append("Estos enlaces deben aparecer cuando se mencionen categorías de productos, comparativas generales o recomendaciones de explorar más opciones.\n")
+        for link in category_links:
+            sections.append(f"- **Anchor:** \"{link.anchor}\"")
+            sections.append(f"  **URL:** {link.url}")
+            sections.append("")
+    
+    if pdp_links:
+        sections.append("### Enlaces a fichas de producto:")
+        sections.append("Estos enlaces deben aparecer cuando se mencione un producto específico, en recomendaciones concretas o en CTAs de compra.\n")
+        for link in pdp_links:
+            sections.append(f"- **Anchor:** \"{link.anchor}\"")
+            sections.append(f"  **URL:** {link.url}")
+            sections.append("")
+    
+    return "\n".join(sections)
 
 
 # ============================================================================
@@ -1101,43 +1399,39 @@ __all__ = [
     'InputValidationError',
     'KeywordValidationError',
     'URLValidationError',
-    'LengthValidationError',
     'LinksValidationError',
-    'ArquetipoValidationError',
     
-    # Clases de datos
-    'InputMode',
+    # Enums y Data Classes
     'LinkType',
+    'EnhancedLink',
     'ValidationResult',
     'FormData',
+    'LINK_TYPE_CONFIG',
     
     # Funciones de validación
     'validate_keyword',
     'validate_url',
-    'validate_length',
-    'validate_arquetipo',
+    'validate_anchor_text',
+    'validate_enhanced_link',
     'validate_links_list',
     'validate_competitor_urls',
     
-    # Funciones de renderizado
+    # Componentes de renderizado
     'render_keyword_input',
     'render_url_input',
     'render_length_slider',
     'render_arquetipo_selector',
+    'render_enhanced_links_section',
     'render_links_textarea',
     'render_competitor_urls_input',
     'render_additional_instructions',
+    
+    # Formularios
     'render_main_form',
     'render_mode_selector',
     
     # Utilidades
-    'clear_form_state',
+    'clear_form_data',
     'get_form_summary',
-    
-    # Constantes
-    'ERROR_MESSAGES',
-    'MIN_KEYWORD_LENGTH',
-    'MAX_KEYWORD_LENGTH',
-    'MAX_URL_LENGTH',
-    'MAX_LINKS_PER_TYPE',
+    'format_links_for_prompt',
 ]
