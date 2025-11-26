@@ -1,555 +1,1265 @@
 """
-Utilidades para procesamiento de HTML - PcComponentes Content Generator
-Versión 4.1.1
+HTML Utilities - PcComponentes Content Generator
+Versión 4.2.0
 
-Este módulo proporciona funciones para:
-- Contar palabras en HTML
-- Extraer estructura de contenido
-- Validar estructura HTML básica
-- Validar estructura compatible con CMS de PcComponentes
+Utilidades para manipulación y procesamiento de HTML.
+Incluye parser consistente de BeautifulSoup con fallbacks automáticos.
+
+Este módulo proporciona:
+- Parser HTML consistente con detección automática de backend
+- Extracción de contenido y metadatos
+- Sanitización y limpieza de HTML
+- Validación de estructura HTML
+- Conversión entre formatos
+
+IMPORTANTE: Este módulo usa un parser consistente en todo el código.
+La prioridad de parsers es: lxml > html.parser > html5lib
 
 Autor: PcComponentes - Product Discovery & Content
 """
 
 import re
-from typing import Dict, List, Optional, Tuple
-from bs4 import BeautifulSoup
+import html
+import logging
+from typing import Dict, List, Optional, Any, Tuple, Union, Set
+from dataclasses import dataclass, field
+from enum import Enum
+
+# Configurar logging
+logger = logging.getLogger(__name__)
+
+# ============================================================================
+# VERSIÓN Y CONSTANTES
+# ============================================================================
+
+__version__ = "4.2.0"
+
+# Prioridad de parsers (de más rápido a más compatible)
+PARSER_PRIORITY = ['lxml', 'html.parser', 'html5lib']
+
+# Parser por defecto si no se detecta ninguno
+DEFAULT_PARSER = 'html.parser'
+
+# Tags que se consideran contenido principal
+CONTENT_TAGS = ['article', 'main', 'section', 'div']
+
+# Selectores de contenido (orden de prioridad)
+CONTENT_SELECTORS = [
+    'article',
+    'main',
+    '[role="main"]',
+    '.content',
+    '.article-content',
+    '.post-content',
+    '.entry-content',
+    '#content',
+    '#main-content',
+    '.main-content',
+]
+
+# Tags a eliminar para extracción de texto
+REMOVE_TAGS = [
+    'script',
+    'style',
+    'noscript',
+    'iframe',
+    'svg',
+    'canvas',
+    'video',
+    'audio',
+    'map',
+    'object',
+    'embed',
+]
+
+# Tags de navegación/UI a eliminar
+REMOVE_UI_TAGS = [
+    'nav',
+    'header',
+    'footer',
+    'aside',
+    'menu',
+    'menuitem',
+]
+
+# Clases CSS a eliminar
+REMOVE_CLASSES = [
+    'sidebar',
+    'navigation',
+    'nav',
+    'menu',
+    'footer',
+    'header',
+    'ads',
+    'advertisement',
+    'banner',
+    'social',
+    'social-share',
+    'share-buttons',
+    'comments',
+    'comment-section',
+    'related-posts',
+    'related-articles',
+    'breadcrumb',
+    'breadcrumbs',
+    'pagination',
+    'cookie',
+    'popup',
+    'modal',
+]
+
+# IDs a eliminar
+REMOVE_IDS = [
+    'sidebar',
+    'navigation',
+    'nav',
+    'menu',
+    'footer',
+    'header',
+    'comments',
+    'ads',
+    'cookie-banner',
+]
+
+# Tags de estructura permitidos para contenido limpio
+ALLOWED_STRUCTURE_TAGS = [
+    'p', 'h1', 'h2', 'h3', 'h4', 'h5', 'h6',
+    'ul', 'ol', 'li',
+    'table', 'thead', 'tbody', 'tr', 'th', 'td',
+    'blockquote', 'pre', 'code',
+    'a', 'strong', 'em', 'b', 'i', 'u', 's',
+    'br', 'hr',
+    'div', 'span', 'article', 'section',
+    'figure', 'figcaption', 'img',
+]
+
+# Atributos permitidos por tag
+ALLOWED_ATTRIBUTES = {
+    'a': ['href', 'title', 'target', 'rel'],
+    'img': ['src', 'alt', 'title', 'width', 'height'],
+    'table': ['class'],
+    'th': ['colspan', 'rowspan'],
+    'td': ['colspan', 'rowspan'],
+    'div': ['class', 'id'],
+    'span': ['class'],
+    'p': ['class'],
+    'h1': ['class', 'id'],
+    'h2': ['class', 'id'],
+    'h3': ['class', 'id'],
+    'h4': ['class', 'id'],
+    'h5': ['class', 'id'],
+    'h6': ['class', 'id'],
+    'ul': ['class'],
+    'ol': ['class'],
+    'li': ['class'],
+    'blockquote': ['class', 'cite'],
+    'pre': ['class'],
+    'code': ['class'],
+}
+
+# Longitudes máximas
+MAX_HTML_LENGTH = 10 * 1024 * 1024  # 10 MB
+MAX_TEXT_LENGTH = 1 * 1024 * 1024  # 1 MB
 
 
 # ============================================================================
-# FUNCIONES DE ANÁLISIS DE CONTENIDO
+# DETECCIÓN DE PARSER
 # ============================================================================
 
-def count_words_in_html(html_content: str) -> int:
-    """
-    Cuenta el número de palabras en un contenido HTML excluyendo las etiquetas.
-    
-    Esta función elimina todos los tags HTML y cuenta las palabras del texto
-    resultante. Es útil para verificar si se cumple con la longitud objetivo
-    del contenido generado.
-    
-    Args:
-        html_content (str): HTML completo del contenido
-        
-    Returns:
-        int: Número de palabras en el texto (sin contar HTML tags)
-        
-    Examples:
-        >>> html = "<p>Hola mundo</p>"
-        >>> count_words_in_html(html)
-        2
-        
-        >>> html = "<article><h1>Título</h1><p>Contenido de prueba aquí</p></article>"
-        >>> count_words_in_html(html)
-        5
-    """
-    # Eliminar todos los tags HTML
-    text = re.sub(r'<[^>]+>', '', html_content)
-    
-    # Normalizar espacios en blanco
-    text = re.sub(r'\s+', ' ', text).strip()
-    
-    # Contar palabras
-    if not text:
-        return 0
-    
-    words = len(text.split())
-    return words
+_available_parsers: List[str] = []
+_selected_parser: Optional[str] = None
+_bs4_available: bool = False
 
 
-def extract_content_structure(html_content: str) -> Dict:
+def _detect_available_parsers() -> List[str]:
     """
-    Extrae la estructura del contenido HTML para análisis.
+    Detecta los parsers de BeautifulSoup disponibles.
     
-    Analiza el HTML y extrae información relevante como:
-    - Título principal (H1)
-    - Subtítulos (H2, H3, H4)
-    - Número de palabras
-    - Elementos especiales (tablas, callouts, FAQs, verdict-box)
-    - Conteo de enlaces internos y externos
-    
-    Args:
-        html_content (str): HTML completo del contenido
-        
     Returns:
-        Dict: Diccionario con la estructura detectada o información de error
-        
-        Estructura del diccionario de retorno (éxito):
-        {
-            'title': str,                    # Título principal (H1)
-            'headings': List[Dict],          # Lista de encabezados con level y text
-            'word_count': int,               # Número de palabras
-            'has_table': bool,               # Si tiene tablas
-            'has_callout': bool,             # Si tiene callouts
-            'has_faq': bool,                 # Si tiene sección de FAQs
-            'has_verdict': bool,             # Si tiene verdict-box
-            'internal_links_count': int,     # Número de enlaces internos
-            'external_links_count': int,     # Número de enlaces externos
-            'structure_valid': bool          # True si se procesó correctamente
-        }
-        
-        Estructura del diccionario de retorno (error):
-        {
-            'error': str,                    # Mensaje de error
-            'structure_valid': bool          # False
-        }
-        
-    Examples:
-        >>> html = "<article><h1>Título</h1><p>Contenido</p></article>"
-        >>> result = extract_content_structure(html)
-        >>> result['title']
-        'Título'
-        >>> result['word_count']
-        2
+        Lista de parsers disponibles ordenados por prioridad
     """
+    global _available_parsers, _bs4_available
+    
+    if _available_parsers:
+        return _available_parsers
+    
     try:
-        soup = BeautifulSoup(html_content, 'html.parser')
-        
-        # Extraer título principal (H1)
-        title = ""
-        h1 = soup.find('h1')
-        if h1:
-            title = h1.get_text(strip=True)
-        
-        # Extraer subtítulos (H2, H3, H4)
-        headings = []
-        for h in soup.find_all(['h2', 'h3', 'h4']):
-            heading_text = h.get_text(strip=True)
-            if heading_text:  # Solo añadir si tiene texto
-                headings.append({
-                    'level': h.name,
-                    'text': heading_text
-                })
-        
-        # Contar palabras del contenido completo
-        text = soup.get_text(' ', strip=True)
-        word_count = len(text.split()) if text else 0
-        
-        # Detectar elementos especiales
-        has_table = bool(soup.find('table') or soup.find(class_='lt'))
-        has_callout = bool(soup.find(class_=['callout', 'bf-callout']))
-        has_faq = bool(soup.find(class_='faqs'))
-        has_verdict = bool(soup.find(class_='verdict-box'))
-        
-        # Contar enlaces internos y externos
-        links = soup.find_all('a', href=True)
-        internal_links = []
-        external_links = []
-        
-        for link in links:
-            href = link.get('href', '')
-            if 'pccomponentes.com' in href:
-                internal_links.append(link)
-            elif href.startswith('http'):
-                external_links.append(link)
-        
-        return {
-            'title': title,
-            'headings': headings,
-            'word_count': word_count,
-            'has_table': has_table,
-            'has_callout': has_callout,
-            'has_faq': has_faq,
-            'has_verdict': has_verdict,
-            'internal_links_count': len(internal_links),
-            'external_links_count': len(external_links),
-            'structure_valid': True
-        }
-        
-    except Exception as e:
-        return {
-            'error': str(e),
-            'structure_valid': False
-        }
+        from bs4 import BeautifulSoup
+        _bs4_available = True
+    except ImportError:
+        logger.warning("BeautifulSoup4 no disponible")
+        _bs4_available = False
+        return []
+    
+    available = []
+    
+    # Probar lxml
+    try:
+        BeautifulSoup('<html></html>', 'lxml')
+        available.append('lxml')
+        logger.debug("Parser lxml disponible")
+    except Exception:
+        pass
+    
+    # html.parser siempre está disponible con Python
+    try:
+        BeautifulSoup('<html></html>', 'html.parser')
+        available.append('html.parser')
+        logger.debug("Parser html.parser disponible")
+    except Exception:
+        pass
+    
+    # Probar html5lib
+    try:
+        BeautifulSoup('<html></html>', 'html5lib')
+        available.append('html5lib')
+        logger.debug("Parser html5lib disponible")
+    except Exception:
+        pass
+    
+    _available_parsers = available
+    logger.info(f"Parsers HTML disponibles: {available}")
+    
+    return available
+
+
+def get_parser() -> str:
+    """
+    Obtiene el parser óptimo disponible.
+    
+    Returns:
+        Nombre del parser a usar
+    """
+    global _selected_parser
+    
+    if _selected_parser:
+        return _selected_parser
+    
+    available = _detect_available_parsers()
+    
+    if not available:
+        logger.warning("No hay parsers disponibles, usando html.parser por defecto")
+        _selected_parser = DEFAULT_PARSER
+        return _selected_parser
+    
+    # Seleccionar por prioridad
+    for parser in PARSER_PRIORITY:
+        if parser in available:
+            _selected_parser = parser
+            logger.info(f"Parser HTML seleccionado: {parser}")
+            return parser
+    
+    # Fallback al primero disponible
+    _selected_parser = available[0]
+    return _selected_parser
+
+
+def is_bs4_available() -> bool:
+    """Verifica si BeautifulSoup4 está disponible."""
+    _detect_available_parsers()
+    return _bs4_available
+
+
+def get_available_parsers() -> List[str]:
+    """Retorna lista de parsers disponibles."""
+    return _detect_available_parsers()
 
 
 # ============================================================================
-# FUNCIONES DE VALIDACIÓN
+# EXCEPCIONES
 # ============================================================================
 
-def validate_html_structure(html_content: str) -> Dict[str, bool]:
-    """
-    Valida la estructura HTML básica (v4.1).
+class HTMLError(Exception):
+    """Excepción base para errores de HTML."""
     
-    Realiza validaciones básicas de estructura HTML sin entrar en el detalle
-    de la estructura específica del CMS. Esta función es útil para validaciones
-    rápidas durante el proceso de generación.
-    
-    Args:
-        html_content (str): HTML completo a validar
-        
-    Returns:
-        Dict[str, bool]: Diccionario con checks de validación básicos
-        
-        Keys del diccionario:
-        - has_article: Si tiene tag <article>
-        - kicker_uses_span: Si el kicker usa <span> (no <div>)
-        - css_has_root: Si el CSS incluye variables :root
-        - has_bf_callout: Si incluye el callout de Black Friday
-        - no_markdown: Si no contiene sintaxis markdown
-        
-    Examples:
-        >>> html = "<article><span class='kicker'>Test</span></article>"
-        >>> result = validate_html_structure(html)
-        >>> result['has_article']
-        True
-        >>> result['kicker_uses_span']
-        True
-    """
-    html_lower = html_content.lower()
-    
-    return {
-        'has_article': '<article>' in html_lower,
-        'kicker_uses_span': '<span class="kicker">' in html_lower,
-        'css_has_root': ':root' in html_content,
-        'has_bf_callout': 'bf-callout' in html_lower,
-        'no_markdown': not any(md in html_content for md in ['```', '**', '##'])
-    }
+    def __init__(self, message: str, details: Optional[Dict] = None):
+        super().__init__(message)
+        self.message = message
+        self.details = details or {}
 
 
-def validate_cms_structure(html_content: str) -> Tuple[bool, List[str], List[str]]:
+class HTMLParseError(HTMLError):
+    """Error al parsear HTML."""
+    pass
+
+
+class HTMLSanitizeError(HTMLError):
+    """Error al sanitizar HTML."""
+    pass
+
+
+class HTMLExtractionError(HTMLError):
+    """Error al extraer contenido."""
+    pass
+
+
+# ============================================================================
+# DATA CLASSES
+# ============================================================================
+
+@dataclass
+class ParsedHTML:
+    """Resultado de parseo de HTML."""
+    soup: Any  # BeautifulSoup object
+    parser: str
+    original_length: int
+    has_errors: bool = False
+    errors: List[str] = field(default_factory=list)
+
+
+@dataclass
+class ExtractedContent:
+    """Contenido extraído de HTML."""
+    text: str
+    title: str = ""
+    meta_description: str = ""
+    headings: List[Dict[str, str]] = field(default_factory=list)
+    links: List[Dict[str, str]] = field(default_factory=list)
+    images: List[Dict[str, str]] = field(default_factory=list)
+    word_count: int = 0
+    
+    def to_dict(self) -> Dict[str, Any]:
+        """Convierte a diccionario."""
+        return {
+            'text': self.text,
+            'title': self.title,
+            'meta_description': self.meta_description,
+            'headings': self.headings,
+            'links': self.links,
+            'images': self.images,
+            'word_count': self.word_count,
+        }
+
+
+@dataclass
+class HTMLValidationResult:
+    """Resultado de validación HTML."""
+    is_valid: bool
+    errors: List[str] = field(default_factory=list)
+    warnings: List[str] = field(default_factory=list)
+    structure: Dict[str, Any] = field(default_factory=dict)
+
+
+# ============================================================================
+# CLASE PRINCIPAL: HTMLParser
+# ============================================================================
+
+class HTMLParser:
     """
-    Valida que el HTML cumpla con los requisitos del CMS de PcComponentes (v4.1.1).
+    Parser HTML consistente con BeautifulSoup.
     
-    Esta función realiza una validación exhaustiva de la estructura HTML para
-    asegurar que sea compatible con el CMS de PcComponentes. El CMS requiere
-    una estructura específica de 3 articles separados.
+    Características:
+    - Detección automática del mejor parser disponible
+    - Parser consistente en todas las operaciones
+    - Extracción de contenido optimizada
+    - Sanitización de HTML
+    - Manejo robusto de errores
     
-    Verifica:
-    1. Estructura de 3 articles separados
-    2. Primer article contiene solo el kicker
-    3. Segundo article está vacío (separador)
-    4. Tercer article contiene todo el contenido
-    5. CSS al inicio del documento
-    6. Uso de H2 como título principal (NO H1)
-    7. Kicker usa <span>, no <div>
+    Example:
+        >>> parser = HTMLParser()
+        >>> content = parser.extract_content(html_string)
+        >>> clean_html = parser.sanitize(html_string)
+    """
     
-    Args:
-        html_content (str): HTML completo a validar
+    def __init__(self, parser: Optional[str] = None):
+        """
+        Inicializa el parser HTML.
         
-    Returns:
-        Tuple[bool, List[str], List[str]]: Tupla con 3 elementos:
-            - is_valid (bool): True si pasa todas las validaciones críticas
-            - errors (List[str]): Lista de errores críticos encontrados
-            - warnings (List[str]): Lista de advertencias no críticas
+        Args:
+            parser: Parser específico a usar (None = auto-detectar)
+        """
+        self._parser = parser or get_parser()
+        self._bs4_available = is_bs4_available()
+        
+        if not self._bs4_available:
+            logger.warning("BeautifulSoup no disponible - funcionalidad limitada")
+    
+    def parse(self, html: str) -> ParsedHTML:
+        """
+        Parsea HTML y retorna objeto BeautifulSoup.
+        
+        Args:
+            html: String HTML a parsear
             
-    Examples:
-        >>> html = '''
-        ... <style>:root{}</style>
-        ... <article><span class="kicker">Test</span></article>
-        ... <article></article>
-        ... <article><h2>Título</h2><p>Contenido</p></article>
-        ... '''
-        >>> is_valid, errors, warnings = validate_cms_structure(html)
-        >>> is_valid
-        True
-        >>> len(errors)
-        0
+        Returns:
+            ParsedHTML con el soup y metadatos
+            
+        Raises:
+            HTMLParseError: Si hay error de parseo
+        """
+        if not html:
+            raise HTMLParseError("HTML vacío")
         
-    Notes:
-        - Los errores bloquean la publicación en el CMS
-        - Los warnings son recomendaciones que no bloquean
-        - La función es case-sensitive para preservar la estructura HTML
-    """
-    errors = []
-    warnings = []
-    
-    # ========================================================================
-    # VALIDACIÓN 1: CSS al inicio
-    # ========================================================================
-    if not html_content.strip().startswith('<style>'):
-        errors.append("❌ El HTML debe empezar con <style>")
-    
-    # ========================================================================
-    # VALIDACIÓN 2: Conteo de tags <article>
-    # ========================================================================
-    article_count = html_content.count('<article>')
-    
-    if article_count < 3:
-        errors.append(
-            f"❌ Se encontraron {article_count} tags <article>, "
-            f"deben ser mínimo 3 para cumplir con la estructura del CMS"
-        )
-    elif article_count > 3:
-        warnings.append(
-            f"⚠️ Se encontraron {article_count} tags <article>, "
-            f"lo normal son exactamente 3"
-        )
-    
-    # ========================================================================
-    # VALIDACIÓN 3: Estructura del primer article (kicker)
-    # ========================================================================
-    # Patrón: <article> seguido de <span class="kicker">TEXTO</span> y </article>
-    kicker_pattern = r'<article>\s*<span class="kicker">[^<]+</span>\s*</article>'
-    
-    if not re.search(kicker_pattern, html_content):
-        errors.append(
-            '❌ El primer <article> debe contener SOLO '
-            '<span class="kicker">TEXTO</span>'
-        )
-    
-    # ========================================================================
-    # VALIDACIÓN 4: Segundo article vacío
-    # ========================================================================
-    # Patrón: </article> seguido de <article></article> seguido de <article>
-    empty_article_pattern = r'</article>\s*<article>\s*</article>\s*<article>'
-    
-    if not re.search(empty_article_pattern, html_content):
-        errors.append(
-            '❌ Debe haber un <article></article> vacío como segundo article '
-            '(separador entre kicker y contenido)'
-        )
-    
-    # ========================================================================
-    # VALIDACIÓN 5: Título principal debe ser H2, NO H1
-    # ========================================================================
-    if '<h1>' in html_content or '<h1 ' in html_content:
-        errors.append(
-            '❌ No se debe usar <h1>. '
-            'El título principal debe ser <h2> según las reglas del CMS'
-        )
-    
-    # ========================================================================
-    # VALIDACIÓN 6: Contenido en el tercer article
-    # ========================================================================
-    # Extraer todos los articles
-    articles = re.findall(r'<article>(.*?)</article>', html_content, re.DOTALL)
-    
-    if len(articles) >= 3:
-        third_article = articles[2]
-        # Eliminar espacios y saltos de línea para contar contenido real
-        third_article_clean = third_article.strip()
+        if len(html) > MAX_HTML_LENGTH:
+            raise HTMLParseError(f"HTML excede tamaño máximo ({MAX_HTML_LENGTH} bytes)")
         
-        if len(third_article_clean) < 100:
-            errors.append(
-                '❌ El tercer <article> parece vacío o con muy poco contenido. '
-                'Todo el contenido principal debe ir en el tercer article'
+        if not self._bs4_available:
+            raise HTMLParseError("BeautifulSoup no disponible")
+        
+        from bs4 import BeautifulSoup
+        
+        errors = []
+        
+        try:
+            soup = BeautifulSoup(html, self._parser)
+            
+            return ParsedHTML(
+                soup=soup,
+                parser=self._parser,
+                original_length=len(html),
+                has_errors=len(errors) > 0,
+                errors=errors
+            )
+        except Exception as e:
+            raise HTMLParseError(f"Error parseando HTML: {e}")
+    
+    def extract_content(
+        self,
+        html: str,
+        include_links: bool = True,
+        include_images: bool = True,
+        remove_navigation: bool = True
+    ) -> ExtractedContent:
+        """
+        Extrae contenido principal de HTML.
+        
+        Args:
+            html: String HTML
+            include_links: Incluir enlaces extraídos
+            include_images: Incluir imágenes extraídas
+            remove_navigation: Eliminar elementos de navegación
+            
+        Returns:
+            ExtractedContent con el contenido extraído
+        """
+        if not self._bs4_available:
+            # Fallback sin BeautifulSoup
+            return self._extract_content_regex(html)
+        
+        parsed = self.parse(html)
+        soup = parsed.soup
+        
+        # Extraer título
+        title = self._extract_title(soup)
+        
+        # Extraer meta description
+        meta_description = self._extract_meta_description(soup)
+        
+        # Eliminar elementos no deseados
+        self._remove_unwanted_elements(soup, remove_navigation)
+        
+        # Buscar contenido principal
+        content_element = self._find_content_element(soup)
+        
+        # Extraer texto
+        text = self._extract_text(content_element or soup)
+        
+        # Extraer headings
+        headings = self._extract_headings(content_element or soup)
+        
+        # Extraer enlaces
+        links = []
+        if include_links:
+            links = self._extract_links(content_element or soup)
+        
+        # Extraer imágenes
+        images = []
+        if include_images:
+            images = self._extract_images(content_element or soup)
+        
+        # Contar palabras
+        word_count = len(text.split())
+        
+        return ExtractedContent(
+            text=text,
+            title=title,
+            meta_description=meta_description,
+            headings=headings,
+            links=links,
+            images=images,
+            word_count=word_count
+        )
+    
+    def extract_text(self, html: str) -> str:
+        """
+        Extrae solo el texto de HTML.
+        
+        Args:
+            html: String HTML
+            
+        Returns:
+            Texto extraído
+        """
+        content = self.extract_content(html, include_links=False, include_images=False)
+        return content.text
+    
+    def sanitize(
+        self,
+        html: str,
+        allowed_tags: Optional[List[str]] = None,
+        allowed_attributes: Optional[Dict[str, List[str]]] = None,
+        strip_comments: bool = True,
+        strip_cdata: bool = True
+    ) -> str:
+        """
+        Sanitiza HTML eliminando tags y atributos no permitidos.
+        
+        Args:
+            html: String HTML a sanitizar
+            allowed_tags: Tags permitidos (None = usar defaults)
+            allowed_attributes: Atributos permitidos por tag
+            strip_comments: Eliminar comentarios HTML
+            strip_cdata: Eliminar secciones CDATA
+            
+        Returns:
+            HTML sanitizado
+        """
+        if not html:
+            return ""
+        
+        if not self._bs4_available:
+            return self._sanitize_regex(html)
+        
+        allowed_tags = allowed_tags or ALLOWED_STRUCTURE_TAGS
+        allowed_attributes = allowed_attributes or ALLOWED_ATTRIBUTES
+        
+        parsed = self.parse(html)
+        soup = parsed.soup
+        
+        # Eliminar comentarios
+        if strip_comments:
+            from bs4 import Comment
+            for comment in soup.find_all(string=lambda text: isinstance(text, Comment)):
+                comment.extract()
+        
+        # Eliminar CDATA
+        if strip_cdata:
+            from bs4 import CData
+            for cdata in soup.find_all(string=lambda text: isinstance(text, CData)):
+                cdata.extract()
+        
+        # Procesar todos los tags
+        for tag in soup.find_all(True):
+            if tag.name not in allowed_tags:
+                # Reemplazar tag no permitido con su contenido
+                tag.unwrap()
+            else:
+                # Limpiar atributos
+                tag_allowed_attrs = allowed_attributes.get(tag.name, [])
+                attrs_to_remove = [
+                    attr for attr in tag.attrs
+                    if attr not in tag_allowed_attrs
+                ]
+                for attr in attrs_to_remove:
+                    del tag[attr]
+        
+        return str(soup)
+    
+    def clean_for_display(self, html: str) -> str:
+        """
+        Limpia HTML para mostrar en UI.
+        
+        Args:
+            html: String HTML
+            
+        Returns:
+            HTML limpio para display
+        """
+        if not html:
+            return ""
+        
+        if not self._bs4_available:
+            return html
+        
+        parsed = self.parse(html)
+        soup = parsed.soup
+        
+        # Eliminar scripts y styles
+        for tag in soup.find_all(['script', 'style', 'noscript']):
+            tag.decompose()
+        
+        # Limpiar atributos peligrosos
+        for tag in soup.find_all(True):
+            # Eliminar event handlers
+            attrs_to_remove = [
+                attr for attr in tag.attrs
+                if attr.startswith('on') or attr in ['style']
+            ]
+            for attr in attrs_to_remove:
+                del tag[attr]
+            
+            # Limpiar href javascript
+            if tag.name == 'a' and tag.get('href', '').lower().startswith('javascript:'):
+                tag['href'] = '#'
+        
+        return str(soup)
+    
+    def validate(self, html: str) -> HTMLValidationResult:
+        """
+        Valida estructura HTML.
+        
+        Args:
+            html: String HTML a validar
+            
+        Returns:
+            HTMLValidationResult con el resultado
+        """
+        errors = []
+        warnings = []
+        structure = {}
+        
+        if not html:
+            return HTMLValidationResult(
+                is_valid=False,
+                errors=["HTML vacío"]
+            )
+        
+        if not self._bs4_available:
+            # Validación básica sin BeautifulSoup
+            return HTMLValidationResult(
+                is_valid=True,
+                warnings=["BeautifulSoup no disponible - validación limitada"]
+            )
+        
+        try:
+            parsed = self.parse(html)
+            soup = parsed.soup
+            
+            # Verificar estructura básica
+            if not soup.find('html'):
+                warnings.append("Falta tag <html>")
+            
+            if not soup.find('head'):
+                warnings.append("Falta tag <head>")
+            
+            if not soup.find('body'):
+                warnings.append("Falta tag <body>")
+            
+            # Verificar título
+            title = soup.find('title')
+            if not title:
+                warnings.append("Falta tag <title>")
+            elif not title.string or not title.string.strip():
+                warnings.append("Tag <title> vacío")
+            
+            # Verificar meta description
+            meta_desc = soup.find('meta', attrs={'name': 'description'})
+            if not meta_desc:
+                warnings.append("Falta meta description")
+            
+            # Contar headings
+            h1_count = len(soup.find_all('h1'))
+            if h1_count == 0:
+                warnings.append("No hay H1 en la página")
+            elif h1_count > 1:
+                warnings.append(f"Múltiples H1 ({h1_count}) - debería haber solo 1")
+            
+            # Verificar imágenes sin alt
+            imgs_without_alt = soup.find_all('img', alt=False)
+            imgs_without_alt += soup.find_all('img', alt='')
+            if imgs_without_alt:
+                warnings.append(f"{len(imgs_without_alt)} imágenes sin atributo alt")
+            
+            # Verificar enlaces rotos (javascript:void)
+            bad_links = soup.find_all('a', href=re.compile(r'^javascript:', re.I))
+            if bad_links:
+                warnings.append(f"{len(bad_links)} enlaces con javascript:")
+            
+            # Estructura
+            structure = {
+                'has_html': bool(soup.find('html')),
+                'has_head': bool(soup.find('head')),
+                'has_body': bool(soup.find('body')),
+                'has_title': bool(title),
+                'has_meta_description': bool(meta_desc),
+                'h1_count': h1_count,
+                'h2_count': len(soup.find_all('h2')),
+                'h3_count': len(soup.find_all('h3')),
+                'link_count': len(soup.find_all('a')),
+                'image_count': len(soup.find_all('img')),
+            }
+            
+            is_valid = len(errors) == 0
+            
+            return HTMLValidationResult(
+                is_valid=is_valid,
+                errors=errors,
+                warnings=warnings,
+                structure=structure
+            )
+        
+        except Exception as e:
+            return HTMLValidationResult(
+                is_valid=False,
+                errors=[f"Error validando HTML: {e}"]
             )
     
-    # ========================================================================
-    # VALIDACIÓN 7: Kicker debe usar <span>, NO <div>
-    # ========================================================================
-    if '<div class="kicker">' in html_content:
-        errors.append(
-            '❌ El kicker debe usar <span class="kicker">, NO <div>. '
-            'Esto es crítico para la compatibilidad con el CMS'
-        )
-    
-    # ========================================================================
-    # VALIDACIÓN 8: Verificar CSS con variables :root
-    # ========================================================================
-    if ':root' not in html_content:
-        errors.append(
-            '❌ Falta el CSS con variables :root. '
-            'El CSS debe incluir todas las variables del design system'
-        )
-    
-    # ========================================================================
-    # VALIDACIÓN 9: Verificar que hay contenido significativo
-    # ========================================================================
-    # Contar palabras totales
-    total_words = count_words_in_html(html_content)
-    
-    if total_words < 500:
-        warnings.append(
-            f"⚠️ El contenido tiene solo {total_words} palabras. "
-            f"Lo recomendado es mínimo 800 palabras"
-        )
-    
-    # ========================================================================
-    # VALIDACIÓN 10: Verificar callout de Black Friday
-    # ========================================================================
-    if 'bf-callout' not in html_content:
-        warnings.append(
-            "⚠️ No se encontró el callout de Black Friday (.bf-callout). "
-            "Es recomendable incluirlo según las directrices actuales"
-        )
-    
-    # Determinar si es válido
-    is_valid = len(errors) == 0
-    
-    return is_valid, errors, warnings
-
-
-# ============================================================================
-# FUNCIONES AUXILIARES
-# ============================================================================
-
-def strip_html_tags(html_content: str) -> str:
-    """
-    Elimina todos los tags HTML de un contenido, dejando solo el texto.
-    
-    Args:
-        html_content (str): HTML con tags
+    def minify(self, html: str) -> str:
+        """
+        Minifica HTML eliminando espacios innecesarios.
         
-    Returns:
-        str: Texto sin tags HTML
+        Args:
+            html: String HTML
+            
+        Returns:
+            HTML minificado
+        """
+        if not html:
+            return ""
         
-    Examples:
-        >>> strip_html_tags("<p>Hola <strong>mundo</strong></p>")
-        'Hola mundo'
-    """
-    text = re.sub(r'<[^>]+>', '', html_content)
-    text = re.sub(r'\s+', ' ', text).strip()
-    return text
-
-
-def get_heading_hierarchy(html_content: str) -> List[Dict[str, str]]:
-    """
-    Extrae la jerarquía de encabezados del HTML.
+        # Eliminar comentarios
+        html = re.sub(r'<!--.*?-->', '', html, flags=re.DOTALL)
+        
+        # Eliminar espacios entre tags
+        html = re.sub(r'>\s+<', '><', html)
+        
+        # Eliminar espacios múltiples
+        html = re.sub(r'\s+', ' ', html)
+        
+        # Eliminar espacios al inicio/final de líneas
+        html = re.sub(r'^\s+|\s+$', '', html, flags=re.MULTILINE)
+        
+        return html.strip()
     
-    Args:
-        html_content (str): HTML completo
+    def prettify(self, html: str, indent: int = 2) -> str:
+        """
+        Formatea HTML con indentación.
         
-    Returns:
-        List[Dict[str, str]]: Lista de diccionarios con level y text de cada encabezado
+        Args:
+            html: String HTML
+            indent: Espacios de indentación
+            
+        Returns:
+            HTML formateado
+        """
+        if not html:
+            return ""
         
-    Examples:
-        >>> html = "<h1>Main</h1><h2>Sub1</h2><h3>Sub2</h3>"
-        >>> hierarchy = get_heading_hierarchy(html)
-        >>> len(hierarchy)
-        3
-        >>> hierarchy[0]
-        {'level': 'h1', 'text': 'Main'}
-    """
-    try:
-        soup = BeautifulSoup(html_content, 'html.parser')
+        if not self._bs4_available:
+            return html
+        
+        try:
+            parsed = self.parse(html)
+            return parsed.soup.prettify(formatter="html")
+        except Exception:
+            return html
+    
+    # ========================================================================
+    # MÉTODOS PRIVADOS - EXTRACCIÓN
+    # ========================================================================
+    
+    def _extract_title(self, soup) -> str:
+        """Extrae el título de la página."""
+        # Intentar tag title
+        title_tag = soup.find('title')
+        if title_tag and title_tag.string:
+            return title_tag.string.strip()
+        
+        # Intentar og:title
+        og_title = soup.find('meta', property='og:title')
+        if og_title and og_title.get('content'):
+            return og_title['content'].strip()
+        
+        # Intentar H1
+        h1 = soup.find('h1')
+        if h1:
+            return h1.get_text(strip=True)
+        
+        return ""
+    
+    def _extract_meta_description(self, soup) -> str:
+        """Extrae la meta description."""
+        # Meta description estándar
+        meta = soup.find('meta', attrs={'name': 'description'})
+        if meta and meta.get('content'):
+            return meta['content'].strip()
+        
+        # og:description
+        og_desc = soup.find('meta', property='og:description')
+        if og_desc and og_desc.get('content'):
+            return og_desc['content'].strip()
+        
+        return ""
+    
+    def _remove_unwanted_elements(self, soup, remove_navigation: bool = True) -> None:
+        """Elimina elementos no deseados del soup."""
+        # Eliminar tags de script/style
+        for tag_name in REMOVE_TAGS:
+            for tag in soup.find_all(tag_name):
+                tag.decompose()
+        
+        # Eliminar navegación si se solicita
+        if remove_navigation:
+            for tag_name in REMOVE_UI_TAGS:
+                for tag in soup.find_all(tag_name):
+                    tag.decompose()
+        
+        # Eliminar por clase
+        for class_name in REMOVE_CLASSES:
+            for tag in soup.find_all(class_=re.compile(class_name, re.I)):
+                tag.decompose()
+        
+        # Eliminar por ID
+        for id_name in REMOVE_IDS:
+            tag = soup.find(id=re.compile(id_name, re.I))
+            if tag:
+                tag.decompose()
+    
+    def _find_content_element(self, soup):
+        """Encuentra el elemento de contenido principal."""
+        for selector in CONTENT_SELECTORS:
+            try:
+                element = soup.select_one(selector)
+                if element and len(element.get_text(strip=True)) > 100:
+                    return element
+            except Exception:
+                continue
+        
+        # Fallback: buscar el div con más texto
+        best_element = None
+        best_length = 0
+        
+        for div in soup.find_all(['article', 'main', 'div']):
+            text = div.get_text(strip=True)
+            if len(text) > best_length:
+                best_length = len(text)
+                best_element = div
+        
+        return best_element
+    
+    def _extract_text(self, element) -> str:
+        """Extrae texto limpio de un elemento."""
+        if element is None:
+            return ""
+        
+        # Obtener texto
+        text = element.get_text(separator=' ', strip=True)
+        
+        # Limpiar espacios múltiples
+        text = re.sub(r'\s+', ' ', text)
+        
+        # Eliminar caracteres de control
+        text = re.sub(r'[\x00-\x1f\x7f-\x9f]', '', text)
+        
+        return text.strip()
+    
+    def _extract_headings(self, element) -> List[Dict[str, str]]:
+        """Extrae headings del elemento."""
         headings = []
         
-        for h in soup.find_all(['h1', 'h2', 'h3', 'h4', 'h5', 'h6']):
-            heading_text = h.get_text(strip=True)
-            if heading_text:
-                headings.append({
-                    'level': h.name,
-                    'text': heading_text
-                })
+        for level in range(1, 7):
+            for heading in element.find_all(f'h{level}'):
+                text = heading.get_text(strip=True)
+                if text:
+                    headings.append({
+                        'level': level,
+                        'tag': f'h{level}',
+                        'text': text,
+                        'id': heading.get('id', ''),
+                    })
         
         return headings
-        
-    except Exception:
-        return []
-
-
-def validate_word_count_target(html_content: str, target: int, tolerance: float = 0.05) -> Dict:
-    """
-    Valida si el conteo de palabras está dentro del objetivo con tolerancia.
     
-    Args:
-        html_content (str): HTML completo
-        target (int): Número objetivo de palabras
-        tolerance (float): Tolerancia como porcentaje (0.05 = 5%)
+    def _extract_links(self, element) -> List[Dict[str, str]]:
+        """Extrae enlaces del elemento."""
+        links = []
+        seen_hrefs = set()
         
-    Returns:
-        Dict: Información sobre el conteo
-        {
-            'actual': int,           # Palabras actuales
-            'target': int,           # Palabras objetivo
-            'min_acceptable': int,   # Mínimo aceptable
-            'max_acceptable': int,   # Máximo aceptable
-            'within_range': bool,    # Si está en rango
-            'difference': int,       # Diferencia con objetivo
-            'percentage_diff': float # Diferencia en porcentaje
-        }
-        
-    Examples:
-        >>> html = "<p>" + " ".join(["word"] * 1000) + "</p>"
-        >>> result = validate_word_count_target(html, 1000, 0.05)
-        >>> result['within_range']
-        True
-    """
-    actual = count_words_in_html(html_content)
-    min_acceptable = int(target * (1 - tolerance))
-    max_acceptable = int(target * (1 + tolerance))
-    within_range = min_acceptable <= actual <= max_acceptable
-    difference = actual - target
-    percentage_diff = (difference / target * 100) if target > 0 else 0
-    
-    return {
-        'actual': actual,
-        'target': target,
-        'min_acceptable': min_acceptable,
-        'max_acceptable': max_acceptable,
-        'within_range': within_range,
-        'difference': difference,
-        'percentage_diff': round(percentage_diff, 2)
-    }
-
-
-# ============================================================================
-# FUNCIONES DE ANÁLISIS DE ENLACES
-# ============================================================================
-
-def analyze_links(html_content: str) -> Dict:
-    """
-    Analiza todos los enlaces del HTML y los categoriza.
-    
-    Args:
-        html_content (str): HTML completo
-        
-    Returns:
-        Dict: Análisis completo de enlaces
-        {
-            'total': int,
-            'internal': List[Dict],  # {'href': str, 'text': str}
-            'external': List[Dict],
-            'broken': List[Dict],    # Enlaces sin href
-            'internal_count': int,
-            'external_count': int,
-            'broken_count': int
-        }
-    """
-    try:
-        soup = BeautifulSoup(html_content, 'html.parser')
-        links = soup.find_all('a')
-        
-        internal = []
-        external = []
-        broken = []
-        
-        for link in links:
-            href = link.get('href', '')
+        for link in element.find_all('a', href=True):
+            href = link['href']
+            
+            # Saltar duplicados
+            if href in seen_hrefs:
+                continue
+            seen_hrefs.add(href)
+            
+            # Saltar javascript y anclas vacías
+            if href.startswith(('javascript:', '#', 'mailto:', 'tel:')):
+                continue
+            
             text = link.get_text(strip=True)
             
-            link_data = {'href': href, 'text': text}
+            links.append({
+                'href': href,
+                'text': text or href,
+                'title': link.get('title', ''),
+                'rel': link.get('rel', []),
+            })
+        
+        return links
+    
+    def _extract_images(self, element) -> List[Dict[str, str]]:
+        """Extrae imágenes del elemento."""
+        images = []
+        seen_srcs = set()
+        
+        for img in element.find_all('img'):
+            src = img.get('src') or img.get('data-src', '')
             
-            if not href:
-                broken.append(link_data)
-            elif 'pccomponentes.com' in href or href.startswith('/'):
-                internal.append(link_data)
-            elif href.startswith('http'):
-                external.append(link_data)
+            if not src or src in seen_srcs:
+                continue
+            seen_srcs.add(src)
+            
+            images.append({
+                'src': src,
+                'alt': img.get('alt', ''),
+                'title': img.get('title', ''),
+                'width': img.get('width', ''),
+                'height': img.get('height', ''),
+            })
         
-        return {
-            'total': len(links),
-            'internal': internal,
-            'external': external,
-            'broken': broken,
-            'internal_count': len(internal),
-            'external_count': len(external),
-            'broken_count': len(broken)
-        }
+        return images
+    
+    # ========================================================================
+    # MÉTODOS PRIVADOS - FALLBACKS SIN BS4
+    # ========================================================================
+    
+    def _extract_content_regex(self, html: str) -> ExtractedContent:
+        """Extrae contenido usando regex (fallback sin BeautifulSoup)."""
+        # Eliminar scripts y styles
+        html = re.sub(r'<script[^>]*>.*?</script>', '', html, flags=re.DOTALL | re.IGNORECASE)
+        html = re.sub(r'<style[^>]*>.*?</style>', '', html, flags=re.DOTALL | re.IGNORECASE)
         
+        # Extraer título
+        title_match = re.search(r'<title[^>]*>(.*?)</title>', html, re.IGNORECASE | re.DOTALL)
+        title = title_match.group(1).strip() if title_match else ""
+        
+        # Extraer meta description
+        meta_match = re.search(
+            r'<meta[^>]*name=["\']description["\'][^>]*content=["\']([^"\']*)["\']',
+            html, re.IGNORECASE
+        )
+        meta_description = meta_match.group(1).strip() if meta_match else ""
+        
+        # Eliminar todos los tags
+        text = re.sub(r'<[^>]+>', ' ', html)
+        
+        # Decodificar entidades HTML
+        text = html.unescape(text)
+        
+        # Limpiar espacios
+        text = re.sub(r'\s+', ' ', text).strip()
+        
+        return ExtractedContent(
+            text=text,
+            title=title,
+            meta_description=meta_description,
+            word_count=len(text.split())
+        )
+    
+    def _sanitize_regex(self, html: str) -> str:
+        """Sanitiza HTML usando regex (fallback sin BeautifulSoup)."""
+        # Eliminar scripts
+        html = re.sub(r'<script[^>]*>.*?</script>', '', html, flags=re.DOTALL | re.IGNORECASE)
+        
+        # Eliminar styles
+        html = re.sub(r'<style[^>]*>.*?</style>', '', html, flags=re.DOTALL | re.IGNORECASE)
+        
+        # Eliminar comentarios
+        html = re.sub(r'<!--.*?-->', '', html, flags=re.DOTALL)
+        
+        # Eliminar event handlers
+        html = re.sub(r'\s+on\w+\s*=\s*["\'][^"\']*["\']', '', html, flags=re.IGNORECASE)
+        
+        # Eliminar javascript: en href
+        html = re.sub(r'href\s*=\s*["\']javascript:[^"\']*["\']', 'href="#"', html, flags=re.IGNORECASE)
+        
+        return html
+
+
+# ============================================================================
+# INSTANCIA GLOBAL
+# ============================================================================
+
+_default_parser: Optional[HTMLParser] = None
+
+
+def get_html_parser() -> HTMLParser:
+    """
+    Obtiene el parser HTML global.
+    
+    Returns:
+        Instancia de HTMLParser
+    """
+    global _default_parser
+    
+    if _default_parser is None:
+        _default_parser = HTMLParser()
+    
+    return _default_parser
+
+
+def reset_html_parser() -> None:
+    """Resetea el parser HTML global."""
+    global _default_parser
+    _default_parser = None
+
+
+# ============================================================================
+# FUNCIONES DE CONVENIENCIA
+# ============================================================================
+
+def parse_html(html: str) -> ParsedHTML:
+    """
+    Parsea HTML.
+    
+    Args:
+        html: String HTML
+        
+    Returns:
+        ParsedHTML con el resultado
+    """
+    return get_html_parser().parse(html)
+
+
+def extract_content(html: str) -> ExtractedContent:
+    """
+    Extrae contenido de HTML.
+    
+    Args:
+        html: String HTML
+        
+    Returns:
+        ExtractedContent con el contenido
+    """
+    return get_html_parser().extract_content(html)
+
+
+def extract_text(html: str) -> str:
+    """
+    Extrae texto de HTML.
+    
+    Args:
+        html: String HTML
+        
+    Returns:
+        Texto extraído
+    """
+    return get_html_parser().extract_text(html)
+
+
+def sanitize_html(html: str) -> str:
+    """
+    Sanitiza HTML.
+    
+    Args:
+        html: String HTML
+        
+    Returns:
+        HTML sanitizado
+    """
+    return get_html_parser().sanitize(html)
+
+
+def clean_html(html: str) -> str:
+    """
+    Limpia HTML para display.
+    
+    Args:
+        html: String HTML
+        
+    Returns:
+        HTML limpio
+    """
+    return get_html_parser().clean_for_display(html)
+
+
+def validate_html(html: str) -> HTMLValidationResult:
+    """
+    Valida estructura HTML.
+    
+    Args:
+        html: String HTML
+        
+    Returns:
+        HTMLValidationResult
+    """
+    return get_html_parser().validate(html)
+
+
+def minify_html(html: str) -> str:
+    """
+    Minifica HTML.
+    
+    Args:
+        html: String HTML
+        
+    Returns:
+        HTML minificado
+    """
+    return get_html_parser().minify(html)
+
+
+def prettify_html(html: str) -> str:
+    """
+    Formatea HTML con indentación.
+    
+    Args:
+        html: String HTML
+        
+    Returns:
+        HTML formateado
+    """
+    return get_html_parser().prettify(html)
+
+
+def strip_tags(html: str) -> str:
+    """
+    Elimina todos los tags HTML.
+    
+    Args:
+        html: String HTML
+        
+    Returns:
+        Texto sin tags
+    """
+    if not html:
+        return ""
+    
+    # Eliminar tags
+    text = re.sub(r'<[^>]+>', '', html)
+    
+    # Decodificar entidades
+    text = html_module_unescape(text)
+    
+    # Limpiar espacios
+    text = re.sub(r'\s+', ' ', text)
+    
+    return text.strip()
+
+
+def html_module_unescape(text: str) -> str:
+    """
+    Decodifica entidades HTML.
+    
+    Args:
+        text: Texto con entidades
+        
+    Returns:
+        Texto decodificado
+    """
+    return html.unescape(text)
+
+
+def escape_html(text: str) -> str:
+    """
+    Escapa caracteres especiales HTML.
+    
+    Args:
+        text: Texto a escapar
+        
+    Returns:
+        Texto escapado
+    """
+    return html.escape(text)
+
+
+def get_word_count(html: str) -> int:
+    """
+    Cuenta palabras en HTML.
+    
+    Args:
+        html: String HTML
+        
+    Returns:
+        Número de palabras
+    """
+    text = extract_text(html)
+    return len(text.split())
+
+
+def extract_meta_tags(html: str) -> Dict[str, str]:
+    """
+    Extrae todos los meta tags.
+    
+    Args:
+        html: String HTML
+        
+    Returns:
+        Dict con meta tags
+    """
+    parser = get_html_parser()
+    
+    if not is_bs4_available():
+        return {}
+    
+    try:
+        parsed = parser.parse(html)
+        soup = parsed.soup
+        
+        meta_tags = {}
+        
+        # Title
+        title = soup.find('title')
+        if title:
+            meta_tags['title'] = title.string.strip() if title.string else ''
+        
+        # Meta tags estándar
+        for meta in soup.find_all('meta'):
+            name = meta.get('name') or meta.get('property')
+            content = meta.get('content')
+            
+            if name and content:
+                meta_tags[name] = content
+        
+        # Canonical
+        canonical = soup.find('link', rel='canonical')
+        if canonical and canonical.get('href'):
+            meta_tags['canonical'] = canonical['href']
+        
+        return meta_tags
+    
     except Exception:
-        return {
-            'total': 0,
-            'internal': [],
-            'external': [],
-            'broken': [],
-            'internal_count': 0,
-            'external_count': 0,
-            'broken_count': 0
-        }
+        return {}
 
 
 # ============================================================================
-# CONSTANTES Y CONFIGURACIÓN
+# EXPORTS
 # ============================================================================
 
-# Tolerancia por defecto para validación de longitud
-DEFAULT_WORD_COUNT_TOLERANCE = 0.05  # 5%
-
-# Longitud mínima recomendada para contenido
-MIN_RECOMMENDED_WORD_COUNT = 800
-
-# Número esperado de articles en estructura CMS
-EXPECTED_ARTICLE_COUNT = 3
+__all__ = [
+    # Versión
+    '__version__',
+    
+    # Detección de parser
+    'get_parser',
+    'is_bs4_available',
+    'get_available_parsers',
+    
+    # Excepciones
+    'HTMLError',
+    'HTMLParseError',
+    'HTMLSanitizeError',
+    'HTMLExtractionError',
+    
+    # Data classes
+    'ParsedHTML',
+    'ExtractedContent',
+    'HTMLValidationResult',
+    
+    # Clase principal
+    'HTMLParser',
+    
+    # Parser global
+    'get_html_parser',
+    'reset_html_parser',
+    
+    # Funciones de conveniencia
+    'parse_html',
+    'extract_content',
+    'extract_text',
+    'sanitize_html',
+    'clean_html',
+    'validate_html',
+    'minify_html',
+    'prettify_html',
+    'strip_tags',
+    'escape_html',
+    'get_word_count',
+    'extract_meta_tags',
+    
+    # Constantes
+    'CONTENT_SELECTORS',
+    'ALLOWED_STRUCTURE_TAGS',
+    'ALLOWED_ATTRIBUTES',
+]
