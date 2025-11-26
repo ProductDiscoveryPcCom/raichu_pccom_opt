@@ -4,14 +4,15 @@ Versión 4.2.0
 
 Módulo de scraping para extraer contenido de páginas web.
 Incluye timeout configurable, reintentos con backoff exponencial,
-y manejo robusto de errores HTTP.
+validación exhaustiva de URLs, y manejo robusto de errores HTTP.
 
 Este módulo proporciona:
 - Scraping de PDPs de PcComponentes
 - Scraping de páginas de competidores
 - Extracción de contenido HTML limpio
-- Validación de URLs
+- Validación exhaustiva de URLs (seguridad, formato, dominios)
 - Sistema de reintentos configurable
+- Protección contra SSRF y URLs maliciosas
 
 Autor: PcComponentes - Product Discovery & Content
 """
@@ -26,6 +27,31 @@ from enum import Enum
 
 # Configurar logging
 logger = logging.getLogger(__name__)
+
+# ============================================================================
+# IMPORTS DE URL VALIDATOR
+# ============================================================================
+
+try:
+    from utils.url_validator import (
+        URLValidator,
+        ValidationResult as URLValidationResult,
+        validate_url as validate_url_external,
+        is_valid_url,
+        is_safe_url,
+        is_pccomponentes_url,
+        sanitize_url,
+        filter_safe_urls,
+        create_pccomponentes_validator,
+        create_competitor_validator,
+        URLValidationError,
+        UnsafeURLError,
+        ThreatType,
+    )
+    _url_validator_available = True
+except ImportError as e:
+    logger.warning(f"url_validator no disponible, usando validación básica: {e}")
+    _url_validator_available = False
 
 # ============================================================================
 # IMPORTS CON MANEJO DE ERRORES
@@ -532,22 +558,57 @@ class WebScraper:
     
     def _validate_url(self, url: str) -> str:
         """
-        Valida y normaliza una URL.
+        Valida y normaliza una URL usando validación exhaustiva.
         
         Args:
             url: URL a validar
             
         Returns:
-            URL normalizada
+            URL normalizada y validada
             
         Raises:
-            URLValidationError: Si la URL no es válida
+            URLValidationError: Si la URL no es válida o es insegura
         """
         if not url:
             raise URLValidationError("URL vacía", url)
         
         url = url.strip()
         
+        # Usar validador externo si está disponible
+        if _url_validator_available:
+            result = validate_url_external(url)
+            
+            if not result.is_valid:
+                raise URLValidationError(
+                    result.error or "URL inválida",
+                    url,
+                    details={
+                        'status': result.status.value if result.status else 'unknown',
+                        'threat_type': result.threat_type.value if result.threat_type else 'none'
+                    }
+                )
+            
+            # Log de advertencias si existen
+            if result.warnings:
+                for warning in result.warnings:
+                    logger.warning(f"URL warning: {warning}")
+            
+            # Retornar URL normalizada
+            return result.normalized_url or url
+        
+        # Fallback: validación básica si el módulo no está disponible
+        return self._basic_validate_url(url)
+    
+    def _basic_validate_url(self, url: str) -> str:
+        """
+        Validación básica de URL (fallback).
+        
+        Args:
+            url: URL a validar
+            
+        Returns:
+            URL validada
+        """
         # Añadir protocolo si falta
         if not url.startswith(('http://', 'https://')):
             url = 'https://' + url
@@ -564,7 +625,32 @@ class WebScraper:
         if parsed.scheme not in ('http', 'https'):
             raise URLValidationError(f"Esquema no soportado: {parsed.scheme}", url)
         
+        # Validación básica de seguridad
+        dangerous_patterns = ['javascript:', 'data:', '<script', 'onerror=']
+        url_lower = url.lower()
+        for pattern in dangerous_patterns:
+            if pattern in url_lower:
+                raise URLValidationError(f"URL contiene patrón peligroso: {pattern}", url)
+        
         return url
+    
+    def validate_url_safe(self, url: str) -> Tuple[bool, Optional[str], Optional[str]]:
+        """
+        Valida una URL de forma segura (sin lanzar excepciones).
+        
+        Args:
+            url: URL a validar
+            
+        Returns:
+            Tuple[es_válida, url_normalizada, mensaje_error]
+        """
+        try:
+            normalized = self._validate_url(url)
+            return (True, normalized, None)
+        except URLValidationError as e:
+            return (False, None, str(e))
+        except Exception as e:
+            return (False, None, f"Error inesperado: {e}")
     
     def _extract_content(self, html: str) -> Dict[str, str]:
         """
@@ -752,16 +838,28 @@ def scrape_pdp_data(
     Returns:
         Dict con datos del producto o None si hay error
     """
-    # Validar que sea URL de PcComponentes
-    try:
-        parsed = urlparse(url)
-        domain = parsed.netloc.lower()
-        
-        if not any(pcc in domain for pcc in PCCOMPONENTES_DOMAINS):
-            logger.warning(f"URL no es de PcComponentes: {url}")
+    # Validar que sea URL de PcComponentes usando el validador
+    if _url_validator_available:
+        if not is_pccomponentes_url(url):
+            logger.warning(f"URL no es de PcComponentes o es inválida: {url}")
             return None
-    except Exception:
-        return None
+        
+        # Verificar seguridad
+        is_safe, error_msg = is_safe_url(url)
+        if not is_safe:
+            logger.warning(f"URL no segura: {error_msg}")
+            return None
+    else:
+        # Fallback: validación básica
+        try:
+            parsed = urlparse(url)
+            domain = parsed.netloc.lower()
+            
+            if not any(pcc in domain for pcc in PCCOMPONENTES_DOMAINS):
+                logger.warning(f"URL no es de PcComponentes: {url}")
+                return None
+        except Exception:
+            return None
     
     result = scrape_url(url, timeout=timeout, extract_content=True)
     
@@ -783,15 +881,19 @@ def scrape_pdp_data(
 def scrape_competitor_urls(
     urls: List[str],
     timeout: Optional[float] = None,
-    max_concurrent: int = 1
+    max_concurrent: int = 1,
+    validate_urls: bool = True,
+    exclude_pccomponentes: bool = True
 ) -> List[Dict[str, Any]]:
     """
-    Scrapea múltiples URLs de competidores.
+    Scrapea múltiples URLs de competidores con validación.
     
     Args:
         urls: Lista de URLs a scrapear
         timeout: Timeout por URL (opcional)
         max_concurrent: Número máximo de requests concurrentes (futuro)
+        validate_urls: Si validar URLs antes de scrapear
+        exclude_pccomponentes: Si excluir URLs de PcComponentes
         
     Returns:
         Lista de dicts con datos de cada competidor
@@ -799,7 +901,47 @@ def scrape_competitor_urls(
     results = []
     scraper = get_scraper()
     
+    # Filtrar y validar URLs
+    urls_to_scrape = []
+    
     for url in urls:
+        # Validar URL
+        if validate_urls and _url_validator_available:
+            is_safe, error_msg = is_safe_url(url)
+            
+            if not is_safe:
+                logger.warning(f"URL inválida o insegura, omitiendo: {url} - {error_msg}")
+                results.append({
+                    'url': url,
+                    'success': False,
+                    'title': '',
+                    'content': '',
+                    'word_count': 0,
+                    'error': f"URL inválida: {error_msg}",
+                    'response_time': 0,
+                    'skipped': True,
+                })
+                continue
+            
+            # Excluir PcComponentes si está configurado
+            if exclude_pccomponentes and is_pccomponentes_url(url):
+                logger.info(f"Excluyendo URL de PcComponentes: {url}")
+                results.append({
+                    'url': url,
+                    'success': False,
+                    'title': '',
+                    'content': '',
+                    'word_count': 0,
+                    'error': "URL de PcComponentes excluida de competidores",
+                    'response_time': 0,
+                    'skipped': True,
+                })
+                continue
+        
+        urls_to_scrape.append(url)
+    
+    # Scrapear URLs validadas
+    for url in urls_to_scrape:
         logger.info(f"Scrapeando competidor: {url}")
         
         result = scraper.scrape_url(url, extract_content=True, timeout=timeout)
@@ -812,16 +954,18 @@ def scrape_competitor_urls(
             'word_count': result.word_count,
             'error': result.error,
             'response_time': result.response_time,
+            'skipped': False,
         }
         
         results.append(competitor_data)
         
         # Pequeña pausa entre requests para no sobrecargar
-        if len(urls) > 1:
+        if len(urls_to_scrape) > 1:
             time.sleep(0.5)
     
-    successful = sum(1 for r in results if r['success'])
-    logger.info(f"Scraping completado: {successful}/{len(urls)} URLs exitosas")
+    successful = sum(1 for r in results if r.get('success'))
+    skipped = sum(1 for r in results if r.get('skipped'))
+    logger.info(f"Scraping completado: {successful}/{len(urls)} exitosas, {skipped} omitidas")
     
     return results
 
@@ -1095,9 +1239,48 @@ def get_scraper_info() -> Dict[str, Any]:
     return {
         'available': _requests_available,
         'bs4_available': _bs4_available,
+        'url_validator_available': _url_validator_available,
         'default_timeout': DEFAULT_TIMEOUT,
         'default_max_retries': DEFAULT_MAX_RETRIES,
         'version': __version__,
+    }
+
+
+def validate_urls_for_scraping(urls: List[str]) -> Dict[str, Any]:
+    """
+    Valida una lista de URLs para scraping.
+    
+    Args:
+        urls: Lista de URLs a validar
+        
+    Returns:
+        Dict con URLs válidas, inválidas y detalles
+    """
+    valid_urls = []
+    invalid_urls = []
+    
+    scraper = get_scraper()
+    
+    for url in urls:
+        is_valid, normalized, error = scraper.validate_url_safe(url)
+        
+        if is_valid:
+            valid_urls.append({
+                'original': url,
+                'normalized': normalized,
+            })
+        else:
+            invalid_urls.append({
+                'url': url,
+                'error': error,
+            })
+    
+    return {
+        'valid': valid_urls,
+        'invalid': invalid_urls,
+        'valid_count': len(valid_urls),
+        'invalid_count': len(invalid_urls),
+        'total': len(urls),
     }
 
 
@@ -1143,9 +1326,10 @@ __all__ = [
     'clean_html_content',
     'normalize_text',
     
-    # Validación
+    # Validación de URLs
     'validate_url',
     'is_valid_pdp_url',
+    'validate_urls_for_scraping',
     
     # Utilidades
     'is_scraper_available',
@@ -1156,4 +1340,15 @@ __all__ = [
     'DEFAULT_MAX_RETRIES',
     'MIN_TIMEOUT',
     'MAX_TIMEOUT',
+    'PCCOMPONENTES_DOMAINS',
 ]
+
+# Re-export funciones del url_validator si está disponible
+if _url_validator_available:
+    __all__.extend([
+        'is_valid_url',
+        'is_safe_url',
+        'is_pccomponentes_url',
+        'sanitize_url',
+        'filter_safe_urls',
+    ])
