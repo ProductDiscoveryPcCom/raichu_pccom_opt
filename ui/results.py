@@ -1,6 +1,6 @@
 """
 UI de resultados - PcComponentes Content Generator
-Versión 4.1.1
+Versión 4.2.0
 
 Este módulo maneja la visualización de los resultados de generación de contenido.
 Incluye tabs para cada etapa del proceso, validación de estructura HTML v4.1.1,
@@ -509,7 +509,11 @@ def render_structure_analysis(html_content: str) -> None:
     st.caption("Análisis detallado de la estructura del contenido generado")
     
     # Extraer estructura
-    structure = extract_content_structure(html_content)
+    try:
+        structure = extract_content_structure(html_content)
+    except Exception as e:
+        st.error(f"❌ Error al extraer estructura: {str(e)}")
+        return
     
     if not structure.get('structure_valid', True):
         st.error(f"❌ Error al analizar estructura: {structure.get('error', 'Error desconocido')}")
@@ -545,11 +549,18 @@ def render_structure_analysis(html_content: str) -> None:
         st.markdown("#### 📑 Estructura de Secciones")
         
         for heading in headings:
-            level = heading.get('level', 2)
-            text = heading.get('text', '')
-            indent = "  " * (level - 2)
+            # Obtener level y asegurar que sea un entero válido
+            try:
+                level = int(heading.get('level', 2))
+            except (ValueError, TypeError):
+                level = 2  # Valor por defecto si no se puede convertir
             
-            if level == 2:
+            text = heading.get('text', '')
+            
+            # CORRECCIÓN: Usar max(0, level - 2) para evitar valores negativos
+            indent = "  " * max(0, level - 2)
+            
+            if level <= 2:
                 st.markdown(f"{indent}**{text}**")
             elif level == 3:
                 st.markdown(f"{indent}• {text}")
@@ -817,7 +828,7 @@ def render_results_help() -> None:
 # ============================================================================
 
 # Versión del módulo
-__version__ = "4.1.1"
+__version__ = "4.2.0"
 
 # Colores para estados
 COLOR_SUCCESS = "green"
