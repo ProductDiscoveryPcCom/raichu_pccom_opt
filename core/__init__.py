@@ -160,32 +160,41 @@ except ImportError as e:
 
 try:
     from core.semrush import (
-        # Cliente principal
+        # Cliente principal (Singleton)
         SEMrushClient,
+        get_semrush_client,
+        reset_semrush_client,
         
-        # Funciones de API
+        # Funciones de keywords
         get_keyword_data,
-        get_domain_overview,
-        get_organic_results,
         get_related_keywords,
-        get_keyword_difficulty,
+        get_domain_keywords,
         
-        # Funciones de análisis
-        analyze_serp,
-        get_competitor_keywords,
-        get_keyword_gap,
-        
-        # Utilidades
+        # Verificación
         is_semrush_available,
-        validate_api_key,
-        get_api_units_remaining,
+        is_semrush_configured,
+        
+        # Configuración
+        SEMrushConfig,
+        RateLimitConfig,
+        RetryConfig,
+        CacheConfig,
+        APIResponse,
         
         # Excepciones
         SEMrushError,
         SEMrushAPIError,
         SEMrushRateLimitError,
+        SEMrushAuthError,
+        SEMrushConfigError,
+        SEMrushTimeoutError,
+        
+        # Constantes
+        DEFAULT_DATABASE,
+        SEMRUSH_DATABASES,
     )
     _semrush_available = True
+    logger.debug("Módulo SEMrush cargado correctamente")
     
 except ImportError as e:
     logger.info(f"Módulo SEMrush no disponible (opcional): {e}")
@@ -195,56 +204,78 @@ except ImportError as e:
     class SEMrushClient:
         """Placeholder para SEMrushClient cuando el módulo no está disponible."""
         
+        _instance = None
+        
+        def __new__(cls, *args, **kwargs):
+            if cls._instance is None:
+                cls._instance = super().__new__(cls)
+            return cls._instance
+        
         def __init__(self, *args, **kwargs):
-            raise ImportError(
-                "SEMrush no está disponible. "
-                "Instala las dependencias necesarias o configura la API key."
-            )
+            pass
+        
+        def is_configured(self) -> bool:
+            return False
+        
+        def get_keyword_overview(self, *args, **kwargs):
+            logger.warning("SEMrush no disponible")
+            return None
+        
+        def get_related_keywords(self, *args, **kwargs):
+            logger.warning("SEMrush no disponible")
+            return None
+        
+        def get_domain_organic_keywords(self, *args, **kwargs):
+            logger.warning("SEMrush no disponible")
+            return None
+    
+    def get_semrush_client(*args, **kwargs):
+        """Retorna instancia placeholder del cliente."""
+        return SEMrushClient()
+    
+    def reset_semrush_client():
+        """No hace nada ya que SEMrush no está disponible."""
+        pass
     
     def get_keyword_data(*args, **kwargs):
         logger.warning("SEMrush no disponible: get_keyword_data")
         return None
     
-    def get_domain_overview(*args, **kwargs):
-        logger.warning("SEMrush no disponible: get_domain_overview")
-        return None
-    
-    def get_organic_results(*args, **kwargs):
-        logger.warning("SEMrush no disponible: get_organic_results")
-        return []
-    
     def get_related_keywords(*args, **kwargs):
         logger.warning("SEMrush no disponible: get_related_keywords")
         return []
     
-    def get_keyword_difficulty(*args, **kwargs):
-        logger.warning("SEMrush no disponible: get_keyword_difficulty")
-        return None
-    
-    def analyze_serp(*args, **kwargs):
-        logger.warning("SEMrush no disponible: analyze_serp")
-        return {}
-    
-    def get_competitor_keywords(*args, **kwargs):
-        logger.warning("SEMrush no disponible: get_competitor_keywords")
+    def get_domain_keywords(*args, **kwargs):
+        logger.warning("SEMrush no disponible: get_domain_keywords")
         return []
-    
-    def get_keyword_gap(*args, **kwargs):
-        logger.warning("SEMrush no disponible: get_keyword_gap")
-        return {}
     
     def is_semrush_available() -> bool:
         """Retorna False ya que SEMrush no está disponible."""
         return False
     
-    def validate_api_key(*args, **kwargs) -> bool:
+    def is_semrush_configured() -> bool:
         """Retorna False ya que SEMrush no está disponible."""
         return False
     
-    def get_api_units_remaining(*args, **kwargs):
-        """Retorna None ya que SEMrush no está disponible."""
-        return None
+    # Configuraciones placeholder
+    class SEMrushConfig:
+        pass
     
+    class RateLimitConfig:
+        pass
+    
+    class RetryConfig:
+        pass
+    
+    class CacheConfig:
+        pass
+    
+    class APIResponse:
+        success: bool = False
+        data: None = None
+        error: str = "SEMrush no disponible"
+    
+    # Excepciones
     class SEMrushError(Exception):
         """Excepción base para errores de SEMrush."""
         pass
@@ -256,6 +287,22 @@ except ImportError as e:
     class SEMrushRateLimitError(SEMrushError):
         """Error de rate limit de SEMrush."""
         pass
+    
+    class SEMrushAuthError(SEMrushError):
+        """Error de autenticación de SEMrush."""
+        pass
+    
+    class SEMrushConfigError(SEMrushError):
+        """Error de configuración de SEMrush."""
+        pass
+    
+    class SEMrushTimeoutError(SEMrushError):
+        """Error de timeout de SEMrush."""
+        pass
+    
+    # Constantes
+    DEFAULT_DATABASE = 'es'
+    SEMRUSH_DATABASES = {'es': 'es', 'us': 'us', 'uk': 'uk'}
 
 
 # ============================================================================
@@ -440,30 +487,38 @@ __all__ = [
     "USER_AGENT",
     
     # === SEMRUSH ===
-    # Cliente
+    # Cliente (Singleton)
     "SEMrushClient",
+    "get_semrush_client",
+    "reset_semrush_client",
     
-    # Funciones de API
+    # Funciones de conveniencia
     "get_keyword_data",
-    "get_domain_overview",
-    "get_organic_results",
     "get_related_keywords",
-    "get_keyword_difficulty",
+    "get_domain_keywords",
     
-    # Análisis
-    "analyze_serp",
-    "get_competitor_keywords",
-    "get_keyword_gap",
-    
-    # Utilidades
+    # Verificación
     "is_semrush_available",
-    "validate_api_key",
-    "get_api_units_remaining",
+    "is_semrush_configured",
+    
+    # Configuración
+    "SEMrushConfig",
+    "RateLimitConfig",
+    "RetryConfig",
+    "CacheConfig",
+    "APIResponse",
     
     # Excepciones
     "SEMrushError",
     "SEMrushAPIError",
     "SEMrushRateLimitError",
+    "SEMrushAuthError",
+    "SEMrushConfigError",
+    "SEMrushTimeoutError",
+    
+    # Constantes
+    "DEFAULT_DATABASE",
+    "SEMRUSH_DATABASES",
     
     # === FUNCIONES DE DISPONIBILIDAD ===
     "is_generator_available",
