@@ -151,38 +151,36 @@ def ensure_initialized() -> None:
 # GESTIÓN DE GENERACIONES - FUNCIONES PRINCIPALES
 # ============================================================================
 
-def save_generation_to_state(data: Dict[str, Any]) -> str:
+def save_generation_to_state(
+    stage_or_data: Union[int, Dict[str, Any]],
+    content: Optional[str] = None,
+    metadata: Optional[Dict[str, Any]] = None,
+    **kwargs
+) -> str:
     """
     Guarda una generación completa en el estado de sesión.
     
-    Esta es la función principal para guardar contenido generado.
-    Acepta un diccionario con toda la información de la generación.
+    COMPATIBLE CON DOS FIRMAS:
+    
+    1. Firma nueva (recomendada): save_generation_to_state(data: Dict)
+       >>> save_generation_to_state({
+       ...     'stage': 1,
+       ...     'content': '<article>...</article>',
+       ...     'keyword': 'test'
+       ... })
+    
+    2. Firma antigua (compatibilidad): save_generation_to_state(stage, content, metadata)
+       >>> save_generation_to_state(1, '<article>...</article>', {'keyword': 'test'})
     
     Args:
-        data: Diccionario con los datos de la generación. Puede contener:
-            - stage (int): Número de etapa (1, 2, 3)
-            - content (str): Contenido HTML generado
-            - metadata (dict): Metadatos adicionales
-            - keyword (str): Keyword principal
-            - mode (str): Modo de generación ('new' o 'rewrite')
-            - timestamp (str): Timestamp ISO (se genera si no existe)
-            - word_count (int): Conteo de palabras
-            - generation_time (float): Tiempo de generación en segundos
-            - model (str): Modelo usado
-            - tokens_used (int): Tokens consumidos
+        stage_or_data: Si es int, es el número de etapa (firma antigua).
+                      Si es dict, contiene todos los datos (firma nueva).
+        content: Contenido HTML (solo para firma antigua)
+        metadata: Metadatos adicionales (solo para firma antigua)
+        **kwargs: Argumentos adicionales para ambas firmas
             
     Returns:
         str: ID único de la generación guardada
-        
-    Example:
-        >>> generation_id = save_generation_to_state({
-        ...     'stage': 1,
-        ...     'content': '<article>...</article>',
-        ...     'keyword': 'portátiles gaming',
-        ...     'mode': 'new',
-        ...     'word_count': 1500
-        ... })
-        >>> print(f"Guardado con ID: {generation_id}")
         
     Notes:
         - Genera automáticamente ID único basado en contenido y timestamp
@@ -192,31 +190,44 @@ def save_generation_to_state(data: Dict[str, Any]) -> str:
     """
     ensure_initialized()
     
+    # Detectar qué firma se está usando
+    if isinstance(stage_or_data, dict):
+        # FIRMA NUEVA: save_generation_to_state(data: Dict)
+        data = stage_or_data
+    else:
+        # FIRMA ANTIGUA: save_generation_to_state(stage, content, metadata)
+        data = {
+            'stage': stage_or_data,
+            'content': content or '',
+            'metadata': metadata or {},
+            **kwargs
+        }
+    
     # Extraer campos del diccionario
     stage = data.get('stage', 1)
-    content = data.get('content', '')
-    metadata = data.get('metadata', {})
+    content_str = data.get('content', '')
+    metadata_dict = data.get('metadata', {})
     
     # Generar timestamp si no existe
     timestamp = data.get('timestamp') or datetime.now().isoformat()
     
     # Generar ID único
-    generation_id = _generate_id(content, timestamp)
+    generation_id = _generate_id(content_str, timestamp)
     
     # Construir objeto de generación completo
     generation = {
         'id': generation_id,
         'stage': stage,
-        'content': content,
+        'content': content_str,
         'timestamp': timestamp,
         'keyword': data.get('keyword', ''),
         'mode': data.get('mode', 'new'),
-        'word_count': data.get('word_count', _count_words(content)),
+        'word_count': data.get('word_count', _count_words(content_str)),
         'generation_time': data.get('generation_time', 0),
         'model': data.get('model', ''),
         'tokens_used': data.get('tokens_used', 0),
         'metadata': {
-            **metadata,
+            **metadata_dict,
             'arquetipo': data.get('arquetipo'),
             'target_length': data.get('target_length'),
             'links': data.get('links'),
@@ -799,6 +810,9 @@ def _count_words(html_content: str) -> int:
     Returns:
         int: Número de palabras
     """
+    if not html_content:
+        return 0
+    
     import re
     # Remover tags HTML
     text = re.sub(r'<[^>]+>', ' ', html_content)
