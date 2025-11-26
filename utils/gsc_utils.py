@@ -1,494 +1,1116 @@
 """
-Utilidades de Google Search Console - PcComponentes Content Generator
-Versión 4.1.1
+GSC Utils - PcComponentes Content Generator
+Versión 4.2.0
 
-Funciones para procesar y analizar datos de GSC desde CSV.
-Incluye detección de keywords existentes, análisis de canibalización,
-y validación de freshness de datos.
+Utilidades para Google Search Console (GSC).
+Incluye sistema de caché robusto con TTL, invalidación automática y manual,
+límite de tamaño, y manejo de datos de GSC.
+
+Este módulo proporciona:
+- Sistema de caché con TTL configurable
+- Funciones para cargar y procesar datos de GSC
+- Análisis de keywords y métricas
+- Integración con el flujo de generación de contenido
 
 Autor: PcComponentes - Product Discovery & Content
 """
 
-import pandas as pd
-import streamlit as st
+import os
+import csv
+import json
+import hashlib
+import logging
+import threading
 from datetime import datetime, timedelta
-from typing import Dict, List, Optional, Tuple
-import re
-from difflib import SequenceMatcher
+from pathlib import Path
+from typing import Dict, List, Optional, Any, Tuple, Callable, TypeVar, Union
+from dataclasses import dataclass, field
+from functools import wraps
+from collections import OrderedDict
+
+# Configurar logging
+logger = logging.getLogger(__name__)
+
+# ============================================================================
+# IMPORTS CON MANEJO DE ERRORES
+# ============================================================================
+
+try:
+    import pandas as pd
+    _pandas_available = True
+except ImportError:
+    logger.warning("pandas no disponible - funcionalidad limitada")
+    _pandas_available = False
+
+try:
+    from config.settings import DATA_DIR, GSC_DATA_FILE
+except ImportError:
+    DATA_DIR = Path("./data")
+    GSC_DATA_FILE = DATA_DIR / "gsc_data.csv"
 
 
 # ============================================================================
-# CONFIGURACIÓN
+# VERSIÓN Y CONSTANTES
 # ============================================================================
 
-# Ruta al CSV de GSC (puede configurarse en settings.py)
-DEFAULT_GSC_CSV_PATH = "gsc_keywords.csv"
+__version__ = "4.2.0"
 
-# Período del dataset actual
-DATASET_START_DATE = datetime(2025, 10, 18)
-DATASET_END_DATE = datetime(2025, 11, 17)
+# Configuración de caché por defecto
+DEFAULT_CACHE_TTL = 3600  # 1 hora en segundos
+DEFAULT_CACHE_MAX_SIZE = 100  # Máximo de entradas en caché
+MIN_CACHE_TTL = 60  # Mínimo 1 minuto
+MAX_CACHE_TTL = 86400  # Máximo 24 horas
 
-# Umbrales de alerta
-DAYS_WARNING_THRESHOLD = 30  # Avisar si datos tienen más de 30 días
-DAYS_CRITICAL_THRESHOLD = 60  # Crítico si más de 60 días
-
-# Umbrales de matching
-EXACT_MATCH_THRESHOLD = 1.0  # Match exacto
-HIGH_SIMILARITY_THRESHOLD = 0.85  # Muy similar
-MEDIUM_SIMILARITY_THRESHOLD = 0.70  # Similar
-CONTAINS_MATCH = True  # También buscar si keyword está contenida
+# Configuración de GSC
+GSC_DEFAULT_COLUMNS = [
+    'query', 'page', 'clicks', 'impressions', 'ctr', 'position'
+]
+GSC_METRICS = ['clicks', 'impressions', 'ctr', 'position']
 
 
 # ============================================================================
-# CARGA Y PROCESAMIENTO DEL CSV
+# EXCEPCIONES PERSONALIZADAS
 # ============================================================================
 
-@st.cache_data(ttl=3600)
-def load_gsc_data(csv_path: str = DEFAULT_GSC_CSV_PATH) -> Optional[pd.DataFrame]:
+class GSCError(Exception):
+    """Excepción base para errores de GSC."""
+    
+    def __init__(self, message: str, details: Optional[Dict] = None):
+        super().__init__(message)
+        self.message = message
+        self.details = details or {}
+
+
+class GSCFileError(GSCError):
+    """Error al leer archivo de GSC."""
+    pass
+
+
+class GSCParseError(GSCError):
+    """Error al parsear datos de GSC."""
+    pass
+
+
+class CacheError(GSCError):
+    """Error relacionado con el caché."""
+    pass
+
+
+# ============================================================================
+# SISTEMA DE CACHÉ CON TTL
+# ============================================================================
+
+@dataclass
+class CacheEntry:
+    """Entrada individual en el caché."""
+    key: str
+    value: Any
+    created_at: datetime
+    expires_at: datetime
+    hits: int = 0
+    last_accessed: datetime = field(default_factory=datetime.now)
+    
+    def is_expired(self) -> bool:
+        """Verifica si la entrada ha expirado."""
+        return datetime.now() > self.expires_at
+    
+    def time_to_live(self) -> float:
+        """Retorna segundos restantes de vida."""
+        remaining = (self.expires_at - datetime.now()).total_seconds()
+        return max(0, remaining)
+    
+    def touch(self) -> None:
+        """Actualiza tiempo de acceso y contador de hits."""
+        self.last_accessed = datetime.now()
+        self.hits += 1
+
+
+class TTLCache:
     """
-    Carga el CSV de datos de Google Search Console.
+    Caché con Time-To-Live (TTL) y límite de tamaño.
+    
+    Características:
+    - TTL configurable por entrada o global
+    - Límite máximo de entradas (LRU eviction)
+    - Invalidación automática de entradas expiradas
+    - Invalidación manual por clave o patrón
+    - Thread-safe con locks
+    - Estadísticas de uso
+    
+    Example:
+        >>> cache = TTLCache(ttl=3600, max_size=100)
+        >>> cache.set('key1', 'value1')
+        >>> value = cache.get('key1')
+        >>> cache.invalidate('key1')
     """
     
-    try:
-        # ✅ CORRECCIÓN: encoding='utf-8-sig' elimina el BOM automáticamente
-        df = pd.read_csv(csv_path, sep=None, engine='python', encoding='utf-8-sig')
+    def __init__(
+        self,
+        ttl: int = DEFAULT_CACHE_TTL,
+        max_size: int = DEFAULT_CACHE_MAX_SIZE,
+        name: str = "default"
+    ):
+        """
+        Inicializa el caché.
         
-        # Normalizar nombres de columnas
-        df.columns = df.columns.str.strip().str.lower()
+        Args:
+            ttl: Time-to-live en segundos (default: 3600)
+            max_size: Número máximo de entradas (default: 100)
+            name: Nombre del caché para logging
+        """
+        self._ttl = max(MIN_CACHE_TTL, min(ttl, MAX_CACHE_TTL))
+        self._max_size = max(1, max_size)
+        self._name = name
+        self._cache: OrderedDict[str, CacheEntry] = OrderedDict()
+        self._lock = threading.RLock()
         
-        # Mapeo de columnas
-        column_mapping = {'url': 'page', 'keyword': 'query'}
-        df = df.rename(columns=column_mapping)
+        # Estadísticas
+        self._stats = {
+            'hits': 0,
+            'misses': 0,
+            'evictions': 0,
+            'expirations': 0,
+            'invalidations': 0,
+        }
         
-        # Validar columnas requeridas
-        required_columns = ['page', 'query', 'clicks', 'impressions', 'ctr', 'position']
-        missing_columns = [col for col in required_columns if col not in df.columns]
+        logger.info(f"Caché '{name}' inicializado: TTL={self._ttl}s, max_size={self._max_size}")
+    
+    def get(self, key: str, default: Any = None) -> Any:
+        """
+        Obtiene un valor del caché.
         
-        if missing_columns:
-            st.error(f"❌ Columnas faltantes en CSV: {', '.join(missing_columns)}")
-            st.info(f"Columnas encontradas: {', '.join(df.columns.tolist())}")
-            return None
+        Args:
+            key: Clave a buscar
+            default: Valor por defecto si no existe o expiró
+            
+        Returns:
+            Valor almacenado o default
+        """
+        with self._lock:
+            entry = self._cache.get(key)
+            
+            if entry is None:
+                self._stats['misses'] += 1
+                return default
+            
+            if entry.is_expired():
+                self._remove_entry(key)
+                self._stats['expirations'] += 1
+                self._stats['misses'] += 1
+                return default
+            
+            # Mover al final (más reciente) y actualizar stats
+            self._cache.move_to_end(key)
+            entry.touch()
+            self._stats['hits'] += 1
+            
+            return entry.value
+    
+    def set(
+        self,
+        key: str,
+        value: Any,
+        ttl: Optional[int] = None
+    ) -> None:
+        """
+        Almacena un valor en el caché.
         
-        # Convertir tipos
-        df['clicks'] = pd.to_numeric(df['clicks'], errors='coerce')
-        df['impressions'] = pd.to_numeric(df['impressions'], errors='coerce')
-        df['position'] = pd.to_numeric(df['position'], errors='coerce')
-        df['ctr'] = pd.to_numeric(df['ctr'], errors='coerce')
+        Args:
+            key: Clave para almacenar
+            value: Valor a almacenar
+            ttl: TTL específico para esta entrada (opcional)
+        """
+        with self._lock:
+            # Limpiar entradas expiradas periódicamente
+            self._cleanup_expired()
+            
+            # Verificar límite de tamaño
+            while len(self._cache) >= self._max_size:
+                self._evict_oldest()
+            
+            # Calcular expiración
+            entry_ttl = ttl if ttl is not None else self._ttl
+            entry_ttl = max(MIN_CACHE_TTL, min(entry_ttl, MAX_CACHE_TTL))
+            
+            now = datetime.now()
+            expires_at = now + timedelta(seconds=entry_ttl)
+            
+            # Crear entrada
+            entry = CacheEntry(
+                key=key,
+                value=value,
+                created_at=now,
+                expires_at=expires_at,
+                last_accessed=now
+            )
+            
+            # Almacenar
+            self._cache[key] = entry
+            self._cache.move_to_end(key)
+            
+            logger.debug(f"Caché '{self._name}': SET {key} (TTL={entry_ttl}s)")
+    
+    def invalidate(self, key: str) -> bool:
+        """
+        Invalida (elimina) una entrada específica.
         
-        # Eliminar filas con valores nulos
-        df = df.dropna(subset=['page', 'query', 'position', 'impressions'])
+        Args:
+            key: Clave a invalidar
+            
+        Returns:
+            True si se eliminó, False si no existía
+        """
+        with self._lock:
+            if key in self._cache:
+                self._remove_entry(key)
+                self._stats['invalidations'] += 1
+                logger.debug(f"Caché '{self._name}': INVALIDATE {key}")
+                return True
+            return False
+    
+    def invalidate_pattern(self, pattern: str) -> int:
+        """
+        Invalida todas las entradas que coincidan con un patrón.
         
-        # Filtrar datos
-        df = df[
-            (df['position'] <= 50) &
-            (df['impressions'] >= 10) &
-            (~df['query'].str.contains('pccomponentes|pccom', case=False, na=False)) &
-            (df['query'].str.len() <= 100)
+        Args:
+            pattern: Patrón a buscar (substring)
+            
+        Returns:
+            Número de entradas invalidadas
+        """
+        with self._lock:
+            keys_to_remove = [
+                key for key in self._cache.keys()
+                if pattern in key
+            ]
+            
+            for key in keys_to_remove:
+                self._remove_entry(key)
+                self._stats['invalidations'] += 1
+            
+            if keys_to_remove:
+                logger.info(
+                    f"Caché '{self._name}': INVALIDATE_PATTERN '{pattern}' "
+                    f"({len(keys_to_remove)} entradas)"
+                )
+            
+            return len(keys_to_remove)
+    
+    def invalidate_all(self) -> int:
+        """
+        Invalida todas las entradas del caché.
+        
+        Returns:
+            Número de entradas invalidadas
+        """
+        with self._lock:
+            count = len(self._cache)
+            self._cache.clear()
+            self._stats['invalidations'] += count
+            logger.info(f"Caché '{self._name}': INVALIDATE_ALL ({count} entradas)")
+            return count
+    
+    def invalidate_expired(self) -> int:
+        """
+        Invalida solo las entradas expiradas.
+        
+        Returns:
+            Número de entradas invalidadas
+        """
+        with self._lock:
+            return self._cleanup_expired()
+    
+    def contains(self, key: str) -> bool:
+        """
+        Verifica si una clave existe y no ha expirado.
+        
+        Args:
+            key: Clave a verificar
+            
+        Returns:
+            True si existe y es válida
+        """
+        with self._lock:
+            entry = self._cache.get(key)
+            if entry is None:
+                return False
+            if entry.is_expired():
+                self._remove_entry(key)
+                return False
+            return True
+    
+    def get_ttl(self, key: str) -> Optional[float]:
+        """
+        Obtiene el TTL restante de una entrada.
+        
+        Args:
+            key: Clave a consultar
+            
+        Returns:
+            Segundos restantes o None si no existe
+        """
+        with self._lock:
+            entry = self._cache.get(key)
+            if entry is None or entry.is_expired():
+                return None
+            return entry.time_to_live()
+    
+    def get_stats(self) -> Dict[str, Any]:
+        """
+        Obtiene estadísticas del caché.
+        
+        Returns:
+            Dict con estadísticas de uso
+        """
+        with self._lock:
+            total_requests = self._stats['hits'] + self._stats['misses']
+            hit_rate = (
+                self._stats['hits'] / total_requests * 100
+                if total_requests > 0 else 0
+            )
+            
+            return {
+                'name': self._name,
+                'size': len(self._cache),
+                'max_size': self._max_size,
+                'ttl': self._ttl,
+                'hits': self._stats['hits'],
+                'misses': self._stats['misses'],
+                'hit_rate': f"{hit_rate:.1f}%",
+                'evictions': self._stats['evictions'],
+                'expirations': self._stats['expirations'],
+                'invalidations': self._stats['invalidations'],
+            }
+    
+    def _remove_entry(self, key: str) -> None:
+        """Elimina una entrada del caché (interno)."""
+        if key in self._cache:
+            del self._cache[key]
+    
+    def _evict_oldest(self) -> None:
+        """Elimina la entrada más antigua (LRU)."""
+        if self._cache:
+            oldest_key = next(iter(self._cache))
+            self._remove_entry(oldest_key)
+            self._stats['evictions'] += 1
+            logger.debug(f"Caché '{self._name}': EVICT {oldest_key}")
+    
+    def _cleanup_expired(self) -> int:
+        """Limpia entradas expiradas (interno)."""
+        expired_keys = [
+            key for key, entry in self._cache.items()
+            if entry.is_expired()
         ]
         
-        # Ordenar
-        df = df.sort_values('clicks', ascending=False)
+        for key in expired_keys:
+            self._remove_entry(key)
+            self._stats['expirations'] += 1
         
-        return df
+        return len(expired_keys)
     
-    except FileNotFoundError:
-        st.warning(f"⚠️ No se encontró el archivo CSV: {csv_path}")
-        return None
+    def __len__(self) -> int:
+        """Retorna número de entradas en caché."""
+        return len(self._cache)
     
-    except Exception as e:
-        st.warning(f"⚠️ Error al cargar CSV de GSC: {str(e)}")
-        return None
-
-
-def get_top_query_by_url(df: pd.DataFrame) -> Dict[str, Dict]:
-    """
-    Obtiene la top query para cada URL (la que más clics genera).
-    
-    Args:
-        df: DataFrame con datos de GSC
-        
-    Returns:
-        Dict con URL como key y dict con info de top query
-        
-    Example:
-        {
-            'https://example.com/page': {
-                'query': 'mejor producto',
-                'clicks': 150,
-                'impressions': 5000,
-                'position': 5.2,
-                'ctr': 0.03
-            }
-        }
-    """
-    
-    top_queries = {}
-    
-    # Agrupar por página y obtener la query con más clics
-    for page in df['page'].unique():
-        page_data = df[df['page'] == page].sort_values('clicks', ascending=False).iloc[0]
-        
-        top_queries[page] = {
-            'query': page_data['query'],
-            'clicks': int(page_data['clicks']),
-            'impressions': int(page_data['impressions']),
-            'position': round(float(page_data['position']), 1),
-            'ctr': round(float(page_data['ctr']), 4)
-        }
-    
-    return top_queries
+    def __contains__(self, key: str) -> bool:
+        """Permite usar 'in' operator."""
+        return self.contains(key)
 
 
 # ============================================================================
-# BÚSQUEDA Y MATCHING DE KEYWORDS
+# CACHÉ GLOBAL PARA GSC
 # ============================================================================
 
-def calculate_similarity(str1: str, str2: str) -> float:
-    """
-    Calcula la similitud entre dos strings.
-    
-    Args:
-        str1: Primera string
-        str2: Segunda string
-        
-    Returns:
-        float: Similitud entre 0.0 y 1.0
-        
-    Notes:
-        - Usa SequenceMatcher para similitud
-        - Normaliza a lowercase
-        - Ignora espacios extras
-    """
-    
-    # Normalizar
-    s1 = ' '.join(str1.lower().strip().split())
-    s2 = ' '.join(str2.lower().strip().split())
-    
-    return SequenceMatcher(None, s1, s2).ratio()
+# Instancia global del caché para datos GSC
+_gsc_cache = TTLCache(
+    ttl=DEFAULT_CACHE_TTL,
+    max_size=DEFAULT_CACHE_MAX_SIZE,
+    name="gsc"
+)
 
 
-def find_keyword_matches(
-    keyword: str,
-    df: pd.DataFrame,
-    include_variations: bool = True
-) -> List[Dict]:
+def get_gsc_cache() -> TTLCache:
+    """Obtiene la instancia global del caché GSC."""
+    return _gsc_cache
+
+
+def reset_gsc_cache(
+    ttl: Optional[int] = None,
+    max_size: Optional[int] = None
+) -> TTLCache:
     """
-    Busca matches de una keyword en el dataset de GSC.
+    Resetea el caché GSC con nueva configuración.
     
     Args:
-        keyword: Keyword a buscar
-        df: DataFrame con datos de GSC
-        include_variations: Si True, incluye variaciones similares
+        ttl: Nuevo TTL (opcional)
+        max_size: Nuevo tamaño máximo (opcional)
         
     Returns:
-        Lista de dicts con matches encontrados, ordenados por relevancia
-        
-    Notes:
-        - Match exacto tiene prioridad máxima
-        - Luego matches por similitud
-        - Finalmente matches por contención
+        Nueva instancia del caché
     """
+    global _gsc_cache
     
-    matches = []
-    keyword_norm = keyword.lower().strip()
-    
-    # Iterar sobre queries únicas
-    for query in df['query'].unique():
-        query_norm = query.lower().strip()
-        
-        # Tipo de match
-        match_type = None
-        similarity = 0.0
-        
-        # 1. Match exacto
-        if query_norm == keyword_norm:
-            match_type = 'exact'
-            similarity = 1.0
-        
-        # 2. Match por similitud alta (si está habilitado)
-        elif include_variations:
-            similarity = calculate_similarity(keyword_norm, query_norm)
-            
-            if similarity >= HIGH_SIMILARITY_THRESHOLD:
-                match_type = 'high_similarity'
-            elif similarity >= MEDIUM_SIMILARITY_THRESHOLD:
-                match_type = 'medium_similarity'
-        
-        # 3. Match por contención (si está habilitado)
-        if match_type is None and include_variations and CONTAINS_MATCH:
-            if keyword_norm in query_norm or query_norm in keyword_norm:
-                match_type = 'contains'
-                similarity = 0.6  # Similitud base para contención
-        
-        # Si hay match, agregar a resultados
-        if match_type:
-            # Obtener todas las URLs que rankean para esta query
-            query_data = df[df['query'] == query].sort_values('position')
-            
-            for _, row in query_data.iterrows():
-                matches.append({
-                    'query': query,
-                    'url': row['page'],
-                    'match_type': match_type,
-                    'similarity': similarity,
-                    'position': round(float(row['position']), 1),
-                    'clicks': int(row['clicks']),
-                    'impressions': int(row['impressions']),
-                    'ctr': round(float(row['ctr']), 4)
-                })
-    
-    # Ordenar por relevancia: tipo de match > posición > clics
-    match_priority = {
-        'exact': 4,
-        'high_similarity': 3,
-        'medium_similarity': 2,
-        'contains': 1
-    }
-    
-    matches.sort(
-        key=lambda x: (
-            match_priority.get(x['match_type'], 0),
-            -x['clicks'],  # Más clics primero
-            x['position']  # Mejor posición primero
-        ),
-        reverse=True
+    _gsc_cache = TTLCache(
+        ttl=ttl or DEFAULT_CACHE_TTL,
+        max_size=max_size or DEFAULT_CACHE_MAX_SIZE,
+        name="gsc"
     )
     
-    return matches
+    return _gsc_cache
 
 
-def check_cannibalization_risk(matches: List[Dict]) -> Tuple[bool, str, List[str]]:
+# ============================================================================
+# DECORADOR DE CACHÉ
+# ============================================================================
+
+T = TypeVar('T')
+
+
+def cached(
+    ttl: Optional[int] = None,
+    key_prefix: str = "",
+    cache_instance: Optional[TTLCache] = None
+) -> Callable:
     """
-    Analiza si hay riesgo de canibalización de keywords.
+    Decorador para cachear resultados de funciones.
     
     Args:
-        matches: Lista de matches encontrados
+        ttl: TTL específico (usa el del caché si no se especifica)
+        key_prefix: Prefijo para las claves de caché
+        cache_instance: Instancia de caché a usar (usa global si no se especifica)
         
     Returns:
-        Tuple: (hay_riesgo, nivel_riesgo, urls_afectadas)
-        - hay_riesgo: bool
-        - nivel_riesgo: 'none', 'low', 'medium', 'high'
-        - urls_afectadas: lista de URLs que compiten
+        Decorador configurado
         
-    Notes:
-        - Riesgo alto: 3+ URLs en top 20
-        - Riesgo medio: 2+ URLs en top 30
-        - Riesgo bajo: 2+ URLs en top 50
+    Example:
+        >>> @cached(ttl=1800, key_prefix="gsc_query")
+        ... def get_keywords(url: str) -> List[str]:
+        ...     # Lógica costosa
+        ...     return keywords
     """
-    
-    if not matches:
-        return False, 'none', []
-    
-    # Contar URLs únicas que rankean
-    urls_by_position = {}
-    
-    for match in matches:
-        pos = match['position']
-        url = match['url']
+    def decorator(func: Callable[..., T]) -> Callable[..., T]:
+        @wraps(func)
+        def wrapper(*args, **kwargs) -> T:
+            cache = cache_instance or _gsc_cache
+            
+            # Generar clave única basada en argumentos
+            key_parts = [key_prefix or func.__name__]
+            
+            for arg in args:
+                key_parts.append(str(arg))
+            
+            for k, v in sorted(kwargs.items()):
+                key_parts.append(f"{k}={v}")
+            
+            cache_key = hashlib.md5(
+                ":".join(key_parts).encode()
+            ).hexdigest()
+            
+            # Intentar obtener del caché
+            cached_value = cache.get(cache_key)
+            
+            if cached_value is not None:
+                logger.debug(f"Cache HIT: {func.__name__}")
+                return cached_value
+            
+            # Ejecutar función y cachear resultado
+            logger.debug(f"Cache MISS: {func.__name__}")
+            result = func(*args, **kwargs)
+            
+            if result is not None:
+                cache.set(cache_key, result, ttl=ttl)
+            
+            return result
         
-        if url not in urls_by_position:
-            urls_by_position[url] = pos
+        # Añadir método para invalidar caché de esta función
+        def invalidate_cache(*args, **kwargs) -> bool:
+            cache = cache_instance or _gsc_cache
+            
+            key_parts = [key_prefix or func.__name__]
+            for arg in args:
+                key_parts.append(str(arg))
+            for k, v in sorted(kwargs.items()):
+                key_parts.append(f"{k}={v}")
+            
+            cache_key = hashlib.md5(
+                ":".join(key_parts).encode()
+            ).hexdigest()
+            
+            return cache.invalidate(cache_key)
+        
+        wrapper.invalidate = invalidate_cache
+        wrapper.invalidate_all = lambda: (cache_instance or _gsc_cache).invalidate_pattern(
+            key_prefix or func.__name__
+        )
+        
+        return wrapper
     
-    # Analizar distribución
-    urls_top_20 = [url for url, pos in urls_by_position.items() if pos <= 20]
-    urls_top_30 = [url for url, pos in urls_by_position.items() if pos <= 30]
-    urls_top_50 = [url for url, pos in urls_by_position.items() if pos <= 50]
-    
-    # Determinar nivel de riesgo
-    if len(urls_top_20) >= 3:
-        return True, 'high', urls_top_20
-    elif len(urls_top_30) >= 2:
-        return True, 'medium', urls_top_30
-    elif len(urls_top_50) >= 2:
-        return True, 'low', urls_top_50
-    
-    return False, 'none', []
+    return decorator
 
 
 # ============================================================================
-# VALIDACIÓN DE FRESHNESS DE DATOS
+# FUNCIONES DE CARGA DE DATOS GSC
 # ============================================================================
 
-def get_dataset_age() -> Dict:
+@cached(ttl=3600, key_prefix="gsc_file")
+def load_gsc_data(
+    file_path: Optional[Union[str, Path]] = None,
+    encoding: str = 'utf-8'
+) -> Optional[Dict[str, Any]]:
     """
-    Calcula la antigüedad del dataset de GSC.
+    Carga datos de GSC desde un archivo CSV.
     
-    Returns:
-        Dict con información de freshness:
-        - days_since_end: días desde el fin del período
-        - is_fresh: bool (< 30 días)
-        - needs_update: bool (> 30 días)
-        - is_critical: bool (> 60 días)
-        - warning_message: mensaje descriptivo
-        - dataset_period: string con el período
+    Args:
+        file_path: Ruta al archivo CSV (usa default si no se especifica)
+        encoding: Codificación del archivo
         
-    Notes:
-        - Dataset actual: 18 oct - 17 nov 2025
-        - Warning a partir de 30 días
-        - Crítico a partir de 60 días
+    Returns:
+        Dict con datos procesados o None si hay error
+        
+    Raises:
+        GSCFileError: Si no se puede leer el archivo
+        GSCParseError: Si no se puede parsear el contenido
     """
+    file_path = Path(file_path) if file_path else GSC_DATA_FILE
     
-    today = datetime.now()
-    days_since_end = (today - DATASET_END_DATE).days
+    if not file_path.exists():
+        logger.warning(f"Archivo GSC no encontrado: {file_path}")
+        return None
     
-    # Determinar estado
-    is_fresh = days_since_end <= DAYS_WARNING_THRESHOLD
-    needs_update = days_since_end > DAYS_WARNING_THRESHOLD
-    is_critical = days_since_end > DAYS_CRITICAL_THRESHOLD
-    
-    # Mensaje de warning
-    if is_critical:
-        warning_message = (
-            f"⚠️ **DATOS CRÍTICOS**: El dataset tiene {days_since_end} días de antigüedad. "
-            f"Se recomienda encarecidamente actualizar los datos de GSC."
-        )
-    elif needs_update:
-        warning_message = (
-            f"⚠️ **ACTUALIZACIÓN RECOMENDADA**: El dataset tiene {days_since_end} días de antigüedad. "
-            f"Considera actualizar los datos de GSC para mayor precisión."
-        )
-    else:
-        warning_message = (
-            f"✅ **DATOS ACTUALIZADOS**: El dataset tiene {days_since_end} días de antigüedad. "
-            f"Los datos son recientes y confiables."
+    try:
+        if _pandas_available:
+            return _load_gsc_with_pandas(file_path, encoding)
+        else:
+            return _load_gsc_with_csv(file_path, encoding)
+            
+    except UnicodeDecodeError as e:
+        logger.error(f"Error de codificación al leer {file_path}: {e}")
+        raise GSCFileError(
+            f"Error de codificación en archivo GSC",
+            {"file": str(file_path), "encoding": encoding, "error": str(e)}
         )
     
-    # Formatear período
-    period_str = f"{DATASET_START_DATE.strftime('%d %b %Y')} - {DATASET_END_DATE.strftime('%d %b %Y')}"
+    except PermissionError as e:
+        logger.error(f"Sin permisos para leer {file_path}: {e}")
+        raise GSCFileError(
+            f"Sin permisos para leer archivo GSC",
+            {"file": str(file_path), "error": str(e)}
+        )
+    
+    except Exception as e:
+        logger.error(f"Error inesperado al cargar GSC: {e}")
+        raise GSCFileError(
+            f"Error al cargar archivo GSC: {type(e).__name__}",
+            {"file": str(file_path), "error": str(e)}
+        )
+
+
+def _load_gsc_with_pandas(
+    file_path: Path,
+    encoding: str
+) -> Dict[str, Any]:
+    """Carga GSC usando pandas (más eficiente)."""
+    df = pd.read_csv(file_path, encoding=encoding)
+    
+    # Normalizar nombres de columnas
+    df.columns = df.columns.str.lower().str.strip()
+    
+    # Verificar columnas requeridas
+    required = ['query']
+    missing = [col for col in required if col not in df.columns]
+    
+    if missing:
+        raise GSCParseError(
+            f"Columnas requeridas no encontradas: {missing}",
+            {"columns_found": list(df.columns)}
+        )
+    
+    # Procesar métricas numéricas
+    for metric in ['clicks', 'impressions', 'position']:
+        if metric in df.columns:
+            df[metric] = pd.to_numeric(df[metric], errors='coerce').fillna(0)
+    
+    # CTR especial (puede venir como porcentaje)
+    if 'ctr' in df.columns:
+        df['ctr'] = df['ctr'].apply(_parse_ctr)
     
     return {
-        'days_since_end': days_since_end,
-        'is_fresh': is_fresh,
-        'needs_update': needs_update,
-        'is_critical': is_critical,
-        'warning_message': warning_message,
-        'dataset_period': period_str,
-        'dataset_start': DATASET_START_DATE,
-        'dataset_end': DATASET_END_DATE
+        'data': df.to_dict('records'),
+        'columns': list(df.columns),
+        'row_count': len(df),
+        'file_path': str(file_path),
+        'loaded_at': datetime.now().isoformat(),
+        'source': 'pandas'
     }
 
 
-def get_recommended_update_date() -> str:
-    """
-    Calcula la fecha recomendada para actualizar el dataset.
+def _load_gsc_with_csv(
+    file_path: Path,
+    encoding: str
+) -> Dict[str, Any]:
+    """Carga GSC usando módulo csv estándar."""
+    rows = []
     
-    Returns:
-        String con la fecha recomendada
+    with open(file_path, 'r', encoding=encoding) as f:
+        reader = csv.DictReader(f)
         
-    Notes:
-        - Recomendación: actualizar cada 30 días
-    """
+        # Normalizar nombres de columnas
+        if reader.fieldnames:
+            fieldnames = [col.lower().strip() for col in reader.fieldnames]
+        else:
+            raise GSCParseError("Archivo CSV sin cabeceras")
+        
+        for row in reader:
+            # Normalizar claves
+            normalized_row = {}
+            for key, value in row.items():
+                norm_key = key.lower().strip()
+                
+                # Convertir valores numéricos
+                if norm_key in ['clicks', 'impressions']:
+                    try:
+                        normalized_row[norm_key] = int(value) if value else 0
+                    except ValueError:
+                        normalized_row[norm_key] = 0
+                elif norm_key == 'position':
+                    try:
+                        normalized_row[norm_key] = float(value) if value else 0.0
+                    except ValueError:
+                        normalized_row[norm_key] = 0.0
+                elif norm_key == 'ctr':
+                    normalized_row[norm_key] = _parse_ctr(value)
+                else:
+                    normalized_row[norm_key] = value
+                    
+            rows.append(normalized_row)
     
-    recommended_date = DATASET_END_DATE + timedelta(days=DAYS_WARNING_THRESHOLD)
+    return {
+        'data': rows,
+        'columns': fieldnames,
+        'row_count': len(rows),
+        'file_path': str(file_path),
+        'loaded_at': datetime.now().isoformat(),
+        'source': 'csv'
+    }
+
+
+def _parse_ctr(value: Any) -> float:
+    """Parsea valor de CTR (puede venir como %, decimal, etc.)."""
+    if value is None or value == '':
+        return 0.0
     
-    if datetime.now() > recommended_date:
-        return f"**Vencida** (debería haberse actualizado el {recommended_date.strftime('%d/%m/%Y')})"
-    else:
-        return recommended_date.strftime('%d/%m/%Y')
+    try:
+        if isinstance(value, (int, float)):
+            # Si es mayor que 1, probablemente es porcentaje
+            return value / 100 if value > 1 else value
+        
+        value_str = str(value).strip()
+        
+        # Remover símbolo de porcentaje
+        if '%' in value_str:
+            value_str = value_str.replace('%', '').strip()
+            return float(value_str) / 100
+        
+        value_float = float(value_str)
+        return value_float / 100 if value_float > 1 else value_float
+        
+    except (ValueError, TypeError):
+        return 0.0
 
 
 # ============================================================================
-# FUNCIONES DE ANÁLISIS
+# FUNCIONES DE ANÁLISIS DE DATOS GSC
 # ============================================================================
 
-def analyze_keyword_coverage(keyword: str, df: pd.DataFrame) -> Dict:
+@cached(ttl=1800, key_prefix="gsc_keywords")
+def get_keywords_for_url(
+    url: str,
+    min_clicks: int = 0,
+    min_impressions: int = 0,
+    limit: int = 50
+) -> List[Dict[str, Any]]:
     """
-    Análisis completo de cobertura de una keyword en GSC.
+    Obtiene keywords que llevan tráfico a una URL específica.
     
     Args:
-        keyword: Keyword a analizar
-        df: DataFrame con datos de GSC
+        url: URL a analizar
+        min_clicks: Mínimo de clicks requerido
+        min_impressions: Mínimo de impresiones requerido
+        limit: Número máximo de resultados
         
     Returns:
-        Dict con análisis completo:
-        - has_matches: bool
-        - matches: lista de matches
-        - best_ranking_url: mejor URL rankeando
-        - best_position: mejor posición
-        - total_clicks: total de clics para esta keyword
-        - cannibalization: info de canibalización
-        - recommendation: recomendación de acción
+        Lista de keywords con métricas, ordenadas por clicks
     """
+    gsc_data = load_gsc_data()
     
-    matches = find_keyword_matches(keyword, df, include_variations=True)
+    if not gsc_data or not gsc_data.get('data'):
+        return []
     
-    if not matches:
+    # Filtrar por URL
+    results = []
+    
+    for row in gsc_data['data']:
+        page = row.get('page', '')
+        
+        # Verificar si la URL coincide
+        if url.lower() not in page.lower():
+            continue
+        
+        clicks = row.get('clicks', 0)
+        impressions = row.get('impressions', 0)
+        
+        # Aplicar filtros
+        if clicks < min_clicks:
+            continue
+        if impressions < min_impressions:
+            continue
+        
+        results.append({
+            'query': row.get('query', ''),
+            'clicks': clicks,
+            'impressions': impressions,
+            'ctr': row.get('ctr', 0),
+            'position': row.get('position', 0),
+        })
+    
+    # Ordenar por clicks descendente
+    results.sort(key=lambda x: x['clicks'], reverse=True)
+    
+    return results[:limit]
+
+
+@cached(ttl=1800, key_prefix="gsc_top")
+def get_top_keywords(
+    limit: int = 100,
+    min_clicks: int = 1
+) -> List[Dict[str, Any]]:
+    """
+    Obtiene las keywords con más clicks.
+    
+    Args:
+        limit: Número máximo de resultados
+        min_clicks: Mínimo de clicks requerido
+        
+    Returns:
+        Lista de keywords ordenadas por clicks
+    """
+    gsc_data = load_gsc_data()
+    
+    if not gsc_data or not gsc_data.get('data'):
+        return []
+    
+    # Filtrar y agregar por query
+    query_stats: Dict[str, Dict] = {}
+    
+    for row in gsc_data['data']:
+        query = row.get('query', '').strip().lower()
+        
+        if not query:
+            continue
+        
+        if query not in query_stats:
+            query_stats[query] = {
+                'query': row.get('query', ''),
+                'clicks': 0,
+                'impressions': 0,
+                'ctr_sum': 0,
+                'position_sum': 0,
+                'count': 0
+            }
+        
+        stats = query_stats[query]
+        stats['clicks'] += row.get('clicks', 0)
+        stats['impressions'] += row.get('impressions', 0)
+        stats['ctr_sum'] += row.get('ctr', 0)
+        stats['position_sum'] += row.get('position', 0)
+        stats['count'] += 1
+    
+    # Calcular promedios y filtrar
+    results = []
+    
+    for query, stats in query_stats.items():
+        if stats['clicks'] < min_clicks:
+            continue
+        
+        results.append({
+            'query': stats['query'],
+            'clicks': stats['clicks'],
+            'impressions': stats['impressions'],
+            'ctr': stats['ctr_sum'] / stats['count'] if stats['count'] > 0 else 0,
+            'position': stats['position_sum'] / stats['count'] if stats['count'] > 0 else 0,
+        })
+    
+    # Ordenar por clicks
+    results.sort(key=lambda x: x['clicks'], reverse=True)
+    
+    return results[:limit]
+
+
+@cached(ttl=1800, key_prefix="gsc_related")
+def get_related_keywords(
+    keyword: str,
+    limit: int = 20
+) -> List[Dict[str, Any]]:
+    """
+    Encuentra keywords relacionadas con una keyword dada.
+    
+    Args:
+        keyword: Keyword base para buscar relacionadas
+        limit: Número máximo de resultados
+        
+    Returns:
+        Lista de keywords relacionadas
+    """
+    gsc_data = load_gsc_data()
+    
+    if not gsc_data or not gsc_data.get('data'):
+        return []
+    
+    keyword_lower = keyword.lower().strip()
+    keyword_words = set(keyword_lower.split())
+    
+    results = []
+    seen_queries = set()
+    
+    for row in gsc_data['data']:
+        query = row.get('query', '').strip()
+        query_lower = query.lower()
+        
+        # Evitar duplicados
+        if query_lower in seen_queries:
+            continue
+        
+        # Evitar la misma keyword
+        if query_lower == keyword_lower:
+            continue
+        
+        # Verificar relación (contiene la keyword o palabras comunes)
+        query_words = set(query_lower.split())
+        common_words = keyword_words.intersection(query_words)
+        
+        if keyword_lower in query_lower or len(common_words) >= 1:
+            results.append({
+                'query': query,
+                'clicks': row.get('clicks', 0),
+                'impressions': row.get('impressions', 0),
+                'ctr': row.get('ctr', 0),
+                'position': row.get('position', 0),
+                'relevance': len(common_words) / len(keyword_words) if keyword_words else 0
+            })
+            seen_queries.add(query_lower)
+    
+    # Ordenar por relevancia y clicks
+    results.sort(key=lambda x: (x['relevance'], x['clicks']), reverse=True)
+    
+    return results[:limit]
+
+
+@cached(ttl=3600, key_prefix="gsc_summary")
+def get_gsc_summary() -> Dict[str, Any]:
+    """
+    Obtiene un resumen de los datos de GSC.
+    
+    Returns:
+        Dict con estadísticas resumidas
+    """
+    gsc_data = load_gsc_data()
+    
+    if not gsc_data or not gsc_data.get('data'):
         return {
-            'has_matches': False,
-            'matches': [],
-            'best_ranking_url': None,
-            'best_position': None,
-            'total_clicks': 0,
-            'cannibalization': {
-                'has_risk': False,
-                'level': 'none',
-                'affected_urls': []
-            },
-            'recommendation': 'create_new'
+            'available': False,
+            'error': 'No hay datos de GSC disponibles'
         }
     
-    # Mejor ranking
-    best_match = matches[0]
+    data = gsc_data['data']
     
-    # Total de clics
-    total_clicks = sum(m['clicks'] for m in matches)
+    total_clicks = sum(row.get('clicks', 0) for row in data)
+    total_impressions = sum(row.get('impressions', 0) for row in data)
+    unique_queries = len(set(row.get('query', '').lower() for row in data if row.get('query')))
+    unique_pages = len(set(row.get('page', '').lower() for row in data if row.get('page')))
     
-    # Análisis de canibalización
-    has_risk, risk_level, affected_urls = check_cannibalization_risk(matches)
+    avg_position = (
+        sum(row.get('position', 0) for row in data) / len(data)
+        if data else 0
+    )
     
-    # Recomendación
-    if best_match['match_type'] == 'exact' and best_match['position'] <= 10:
-        recommendation = 'already_ranking_well'
-    elif has_risk and risk_level in ['high', 'medium']:
-        recommendation = 'consolidate_content'
-    elif best_match['position'] > 30:
-        recommendation = 'improve_existing_or_create_new'
-    else:
-        recommendation = 'improve_existing'
+    avg_ctr = total_clicks / total_impressions if total_impressions > 0 else 0
     
     return {
-        'has_matches': True,
-        'matches': matches,
-        'best_ranking_url': best_match['url'],
-        'best_position': best_match['position'],
+        'available': True,
+        'total_rows': len(data),
+        'unique_queries': unique_queries,
+        'unique_pages': unique_pages,
         'total_clicks': total_clicks,
-        'cannibalization': {
-            'has_risk': has_risk,
-            'level': risk_level,
-            'affected_urls': affected_urls
-        },
-        'recommendation': recommendation
+        'total_impressions': total_impressions,
+        'avg_position': round(avg_position, 2),
+        'avg_ctr': round(avg_ctr * 100, 2),
+        'file_path': gsc_data.get('file_path'),
+        'loaded_at': gsc_data.get('loaded_at'),
     }
 
 
 # ============================================================================
-# CONSTANTES Y CONFIGURACIÓN
+# FUNCIONES DE INVALIDACIÓN ESPECÍFICAS
 # ============================================================================
 
-# Versión del módulo
-__version__ = "4.1.1"
+def invalidate_gsc_cache() -> int:
+    """
+    Invalida todo el caché de GSC.
+    
+    Returns:
+        Número de entradas invalidadas
+    """
+    return _gsc_cache.invalidate_all()
 
-# Mapeo de recomendaciones a mensajes
-RECOMMENDATION_MESSAGES = {
-    'create_new': '✅ **Crear contenido nuevo**: No hay contenido rankeando para esta keyword.',
-    'already_ranking_well': '⚠️ **Ya rankeas bien**: Tienes contenido en top 10. Considera si realmente necesitas nuevo contenido.',
-    'consolidate_content': '⚠️ **Consolidar contenido**: Múltiples URLs compiten. Considera consolidar en una sola página.',
-    'improve_existing': '💡 **Mejorar existente**: Tienes contenido rankeando pero puede mejorarse.',
-    'improve_existing_or_create_new': '💡 **Mejorar o crear**: El contenido actual rankea bajo. Evalúa si mejorar o crear nuevo.'
-}
 
-# Mapeo de niveles de riesgo a colores
-RISK_LEVEL_COLORS = {
-    'none': 'green',
-    'low': 'blue',
-    'medium': 'orange',
-    'high': 'red'
-}
+def invalidate_url_cache(url: str) -> int:
+    """
+    Invalida caché relacionado con una URL específica.
+    
+    Args:
+        url: URL para invalidar
+        
+    Returns:
+        Número de entradas invalidadas
+    """
+    # Generar hash de la URL para buscar en caché
+    url_hash = hashlib.md5(url.encode()).hexdigest()[:8]
+    return _gsc_cache.invalidate_pattern(url_hash)
 
-# Mapeo de tipos de match a descripciones
-MATCH_TYPE_DESCRIPTIONS = {
-    'exact': '🎯 Match Exacto',
-    'high_similarity': '🔸 Muy Similar',
-    'medium_similarity': '🔹 Similar',
-    'contains': '📝 Contenida'
-}
+
+def invalidate_keyword_cache(keyword: str) -> int:
+    """
+    Invalida caché relacionado con una keyword específica.
+    
+    Args:
+        keyword: Keyword para invalidar
+        
+    Returns:
+        Número de entradas invalidadas
+    """
+    keyword_hash = hashlib.md5(keyword.encode()).hexdigest()[:8]
+    return _gsc_cache.invalidate_pattern(keyword_hash)
+
+
+def refresh_gsc_data() -> Optional[Dict[str, Any]]:
+    """
+    Fuerza recarga de datos GSC invalidando caché.
+    
+    Returns:
+        Datos frescos de GSC
+    """
+    # Invalidar caché de archivo
+    _gsc_cache.invalidate_pattern("gsc_file")
+    
+    # Recargar
+    return load_gsc_data()
+
+
+# ============================================================================
+# FUNCIONES DE UTILIDAD
+# ============================================================================
+
+def is_gsc_available() -> bool:
+    """
+    Verifica si hay datos de GSC disponibles.
+    
+    Returns:
+        True si hay datos disponibles
+    """
+    file_path = GSC_DATA_FILE
+    return file_path.exists() and file_path.stat().st_size > 0
+
+
+def get_cache_stats() -> Dict[str, Any]:
+    """
+    Obtiene estadísticas del caché GSC.
+    
+    Returns:
+        Dict con estadísticas
+    """
+    return _gsc_cache.get_stats()
+
+
+def format_gsc_for_prompt(
+    keywords: List[Dict[str, Any]],
+    max_keywords: int = 10
+) -> str:
+    """
+    Formatea keywords de GSC para incluir en un prompt.
+    
+    Args:
+        keywords: Lista de keywords con métricas
+        max_keywords: Máximo de keywords a incluir
+        
+    Returns:
+        String formateado para prompt
+    """
+    if not keywords:
+        return "No hay datos de GSC disponibles."
+    
+    lines = ["Keywords de Google Search Console:"]
+    
+    for i, kw in enumerate(keywords[:max_keywords], 1):
+        query = kw.get('query', '')
+        clicks = kw.get('clicks', 0)
+        impressions = kw.get('impressions', 0)
+        position = kw.get('position', 0)
+        
+        lines.append(
+            f"{i}. \"{query}\" - "
+            f"Clicks: {clicks}, Impresiones: {impressions}, "
+            f"Posición: {position:.1f}"
+        )
+    
+    return "\n".join(lines)
+
+
+# ============================================================================
+# EXPORTS
+# ============================================================================
+
+__all__ = [
+    # Versión
+    '__version__',
+    
+    # Excepciones
+    'GSCError',
+    'GSCFileError',
+    'GSCParseError',
+    'CacheError',
+    
+    # Clases
+    'CacheEntry',
+    'TTLCache',
+    
+    # Caché global
+    'get_gsc_cache',
+    'reset_gsc_cache',
+    
+    # Decorador
+    'cached',
+    
+    # Carga de datos
+    'load_gsc_data',
+    
+    # Análisis
+    'get_keywords_for_url',
+    'get_top_keywords',
+    'get_related_keywords',
+    'get_gsc_summary',
+    
+    # Invalidación
+    'invalidate_gsc_cache',
+    'invalidate_url_cache',
+    'invalidate_keyword_cache',
+    'refresh_gsc_data',
+    
+    # Utilidades
+    'is_gsc_available',
+    'get_cache_stats',
+    'format_gsc_for_prompt',
+    
+    # Constantes
+    'DEFAULT_CACHE_TTL',
+    'DEFAULT_CACHE_MAX_SIZE',
+]
