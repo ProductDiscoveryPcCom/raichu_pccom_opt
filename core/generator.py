@@ -1,17 +1,16 @@
 """
 Content Generator - PcComponentes Content Generator
-Versión 4.2.0
+Versión 4.3.0
 
 Módulo de generación de contenido usando la API de Claude (Anthropic).
 Incluye manejo robusto de errores, reintentos con backoff exponencial,
 y validación exhaustiva de respuestas.
 
 Este módulo proporciona:
-- generate_content(): Función principal de generación
+- ContentGenerator: Clase principal para generación
+- generate_content(): Función de generación simple
 - generate_with_stages(): Generación en 3 etapas
 - call_claude_api(): Llamada directa a la API con reintentos
-- Manejo específico de errores de Anthropic
-- Validación y extracción de contenido HTML
 
 Autor: PcComponentes - Product Discovery & Content
 """
@@ -19,13 +18,19 @@ Autor: PcComponentes - Product Discovery & Content
 import re
 import time
 import logging
-from typing import Dict, List, Optional, Tuple, Any, Union
-from dataclasses import dataclass
+from typing import Dict, List, Optional, Tuple, Any, Union, Callable
+from dataclasses import dataclass, field
 from enum import Enum
 
 # Configurar logging
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
+
+# ============================================================================
+# VERSIÓN
+# ============================================================================
+
+__version__ = "4.3.0"
 
 # ============================================================================
 # IMPORTS DE ANTHROPIC CON MANEJO DE ERRORES
@@ -51,38 +56,32 @@ except ImportError as e:
     logger.error(f"No se pudo importar anthropic: {e}")
     _anthropic_available = False
     
-    # Definir clases placeholder para evitar errores de importación
+    # Definir clases placeholder
     class APIError(Exception):
         pass
-    
     class APIConnectionError(Exception):
         pass
-    
     class RateLimitError(Exception):
         pass
-    
     class APIStatusError(Exception):
         pass
-    
     class AuthenticationError(Exception):
         pass
-    
     class BadRequestError(Exception):
         pass
-    
     class PermissionDeniedError(Exception):
         pass
-    
     class NotFoundError(Exception):
         pass
-    
     class UnprocessableEntityError(Exception):
         pass
-    
     class InternalServerError(Exception):
         pass
 
-# Importar configuración
+# ============================================================================
+# IMPORTS DE CONFIGURACIÓN
+# ============================================================================
+
 try:
     from config.settings import (
         CLAUDE_API_KEY,
@@ -94,7 +93,7 @@ try:
     )
 except ImportError:
     import os
-    CLAUDE_API_KEY = os.getenv('CLAUDE_API_KEY', '')
+    CLAUDE_API_KEY = os.getenv('ANTHROPIC_API_KEY', os.getenv('CLAUDE_API_KEY', ''))
     DEFAULT_MODEL = 'claude-sonnet-4-20250514'
     MAX_TOKENS = 16000
     DEFAULT_TEMPERATURE = 0.7
@@ -103,12 +102,9 @@ except ImportError:
 
 
 # ============================================================================
-# VERSIÓN Y CONSTANTES
+# CONSTANTES
 # ============================================================================
 
-__version__ = "4.2.0"
-
-# Modelos disponibles
 AVAILABLE_MODELS = {
     'claude-sonnet-4-20250514': 'Claude Sonnet 4',
     'claude-opus-4-20250514': 'Claude Opus 4',
@@ -117,13 +113,11 @@ AVAILABLE_MODELS = {
     'claude-3-haiku-20240307': 'Claude 3 Haiku',
 }
 
-# Configuración de reintentos
 DEFAULT_MAX_RETRIES = 3
 DEFAULT_RETRY_DELAY = 1.0
 MAX_RETRY_DELAY = 60.0
 BACKOFF_MULTIPLIER = 2.0
 
-# Límites de tokens por modelo (aproximados)
 MODEL_TOKEN_LIMITS = {
     'claude-sonnet-4-20250514': 200000,
     'claude-opus-4-20250514': 200000,
@@ -192,7 +186,7 @@ class GenerationResult:
     tokens_used: int
     generation_time: float
     error: Optional[str] = None
-    metadata: Optional[Dict] = None
+    metadata: Optional[Dict] = field(default_factory=dict)
 
 
 @dataclass
@@ -216,13 +210,6 @@ _client: Optional[Any] = None
 def get_client() -> Any:
     """
     Obtiene el cliente de Anthropic (patrón singleton).
-    
-    Returns:
-        Anthropic: Cliente configurado
-        
-    Raises:
-        APIKeyError: Si la API key no está configurada
-        ImportError: Si anthropic no está disponible
     """
     global _client
     
@@ -233,26 +220,28 @@ def get_client() -> Any:
         )
     
     if _client is None:
-        if not CLAUDE_API_KEY:
+        api_key = CLAUDE_API_KEY
+        
+        if not api_key:
             raise APIKeyError(
                 "CLAUDE_API_KEY no está configurada",
-                {"hint": "Añade CLAUDE_API_KEY al archivo .env"}
+                {"hint": "Añade CLAUDE_API_KEY o ANTHROPIC_API_KEY al archivo .env o secrets"}
             )
         
-        if not CLAUDE_API_KEY.startswith('sk-ant-'):
+        if not api_key.startswith('sk-ant-'):
             raise APIKeyError(
                 "CLAUDE_API_KEY tiene formato inválido",
                 {"hint": "La API key debe empezar con 'sk-ant-'"}
             )
         
-        _client = Anthropic(api_key=CLAUDE_API_KEY)
+        _client = Anthropic(api_key=api_key)
         logger.info("Cliente de Anthropic inicializado correctamente")
     
     return _client
 
 
 def reset_client() -> None:
-    """Resetea el cliente (útil para tests o cambio de API key)."""
+    """Resetea el cliente."""
     global _client
     _client = None
 
@@ -272,336 +261,86 @@ def call_claude_api(
 ) -> APIResponse:
     """
     Llama a la API de Claude con manejo robusto de errores y reintentos.
-    
-    Esta función implementa:
-    - Reintentos con backoff exponencial
-    - Manejo específico de cada tipo de error de Anthropic
-    - Validación de la respuesta antes de retornar
-    - Logging detallado de errores y reintentos
-    
-    Args:
-        prompt: El prompt a enviar a Claude
-        model: Modelo a usar (default: claude-sonnet-4-20250514)
-        max_tokens: Máximo de tokens en la respuesta
-        temperature: Temperatura de generación (0.0-1.0)
-        system_prompt: Prompt de sistema opcional
-        max_retries: Número máximo de reintentos
-        retry_delay: Delay inicial entre reintentos (segundos)
-        
-    Returns:
-        APIResponse: Respuesta parseada con contenido y metadatos
-        
-    Raises:
-        APIKeyError: Si hay problemas con la API key
-        TokenLimitError: Si se excede el límite de tokens
-        RetryExhaustedError: Si se agotan los reintentos
-        GenerationError: Para otros errores de generación
-        
-    Example:
-        >>> response = call_claude_api(
-        ...     prompt="Genera un artículo sobre gaming",
-        ...     model="claude-sonnet-4-20250514",
-        ...     max_tokens=8000
-        ... )
-        >>> print(response.content[:100])
     """
     client = get_client()
     
-    # Construir mensajes
     messages = [{"role": "user", "content": prompt}]
     
-    # Parámetros de la llamada
-    api_params = {
-        "model": model,
-        "max_tokens": max_tokens,
-        "temperature": temperature,
-        "messages": messages,
-    }
-    
-    # Añadir system prompt si existe
-    if system_prompt:
-        api_params["system"] = system_prompt
-    
-    # Variables para reintentos
-    last_error = None
     current_delay = retry_delay
+    last_error = None
     
-    for attempt in range(1, max_retries + 1):
+    for attempt in range(max_retries):
         try:
-            logger.info(f"Llamada a API (intento {attempt}/{max_retries})")
+            logger.info(f"Llamando a Claude API (intento {attempt + 1}/{max_retries})")
             
-            # Llamada a la API
-            response = client.messages.create(**api_params)
+            kwargs = {
+                "model": model,
+                "max_tokens": max_tokens,
+                "temperature": temperature,
+                "messages": messages,
+            }
             
-            # VALIDACIÓN CRÍTICA: Verificar que la respuesta tiene contenido
-            if not response:
-                raise GenerationError(
-                    "La API retornó una respuesta vacía",
-                    {"attempt": attempt}
-                )
+            if system_prompt:
+                kwargs["system"] = system_prompt
             
-            if not hasattr(response, 'content'):
-                raise GenerationError(
-                    "La respuesta no tiene atributo 'content'",
-                    {"response_type": type(response).__name__, "attempt": attempt}
-                )
+            response = client.messages.create(**kwargs)
             
-            if not response.content:
-                raise GenerationError(
-                    "response.content está vacío",
-                    {"attempt": attempt, "stop_reason": getattr(response, 'stop_reason', 'unknown')}
-                )
+            content = ""
+            if response.content:
+                for block in response.content:
+                    if hasattr(block, 'text'):
+                        content += block.text
             
-            if len(response.content) == 0:
-                raise GenerationError(
-                    "response.content es una lista vacía",
-                    {"attempt": attempt}
-                )
-            
-            # Verificar que el primer elemento tiene 'text'
-            first_content = response.content[0]
-            
-            if not hasattr(first_content, 'text'):
-                raise GenerationError(
-                    "El contenido de la respuesta no tiene atributo 'text'",
-                    {"content_type": type(first_content).__name__, "attempt": attempt}
-                )
-            
-            content_text = first_content.text
-            
-            if not content_text or not content_text.strip():
-                raise GenerationError(
-                    "El texto de la respuesta está vacío",
-                    {"attempt": attempt, "stop_reason": getattr(response, 'stop_reason', 'unknown')}
-                )
-            
-            # Extraer información de uso de tokens
-            usage = getattr(response, 'usage', None)
-            input_tokens = getattr(usage, 'input_tokens', 0) if usage else 0
-            output_tokens = getattr(usage, 'output_tokens', 0) if usage else 0
-            
-            logger.info(
-                f"Respuesta recibida: {output_tokens} tokens generados, "
-                f"stop_reason: {getattr(response, 'stop_reason', 'unknown')}"
-            )
-            
-            # Construir y retornar respuesta
             return APIResponse(
-                content=content_text,
-                input_tokens=input_tokens,
-                output_tokens=output_tokens,
-                total_tokens=input_tokens + output_tokens,
-                model=getattr(response, 'model', model),
-                stop_reason=getattr(response, 'stop_reason', 'unknown'),
+                content=content,
+                input_tokens=response.usage.input_tokens,
+                output_tokens=response.usage.output_tokens,
+                total_tokens=response.usage.input_tokens + response.usage.output_tokens,
+                model=response.model,
+                stop_reason=response.stop_reason or "unknown",
             )
-        
-        # ================================================================
-        # MANEJO ESPECÍFICO DE ERRORES DE ANTHROPIC
-        # ================================================================
         
         except AuthenticationError as e:
-            # Error de autenticación - NO reintentar
-            logger.error(f"Error de autenticación: {e}")
-            raise APIKeyError(
-                "Error de autenticación con la API de Anthropic",
-                {
-                    "error": str(e),
-                    "hint": "Verifica que CLAUDE_API_KEY es válida y tiene permisos"
-                }
-            )
-        
-        except PermissionDeniedError as e:
-            # Permiso denegado - NO reintentar
-            logger.error(f"Permiso denegado: {e}")
-            raise APIKeyError(
-                "Permiso denegado por la API de Anthropic",
-                {
-                    "error": str(e),
-                    "hint": "Tu API key no tiene permisos para este modelo o acción"
-                }
-            )
+            raise APIKeyError("API key inválida o expirada", {"original_error": str(e)})
         
         except RateLimitError as e:
-            # Rate limit - reintentar con backoff
-            logger.warning(f"Rate limit alcanzado (intento {attempt}): {e}")
             last_error = e
-            
-            if attempt < max_retries:
-                # Extraer tiempo de espera sugerido si está disponible
-                retry_after = _extract_retry_after(e)
-                wait_time = retry_after if retry_after else current_delay
-                
-                logger.info(f"Esperando {wait_time:.1f}s antes de reintentar...")
-                time.sleep(wait_time)
-                current_delay = min(current_delay * BACKOFF_MULTIPLIER, MAX_RETRY_DELAY)
-                continue
-            else:
-                raise RetryExhaustedError(
-                    f"Rate limit: reintentos agotados después de {max_retries} intentos",
-                    {"last_error": str(e), "suggestion": "Espera unos minutos antes de reintentar"}
-                )
-        
-        except BadRequestError as e:
-            # Request inválido - NO reintentar (error del cliente)
-            logger.error(f"Bad request: {e}")
-            
-            # Verificar si es error de tokens
-            error_str = str(e).lower()
-            if 'token' in error_str or 'context' in error_str or 'length' in error_str:
-                raise TokenLimitError(
-                    "El prompt excede el límite de tokens del modelo",
-                    {
-                        "error": str(e),
-                        "model": model,
-                        "hint": "Reduce la longitud del prompt o usa un modelo con mayor contexto"
-                    }
-                )
-            
-            raise GenerationError(
-                "Request inválido a la API de Anthropic",
-                {"error": str(e), "hint": "Revisa el formato del prompt y parámetros"}
-            )
-        
-        except NotFoundError as e:
-            # Recurso no encontrado (modelo inválido) - NO reintentar
-            logger.error(f"Recurso no encontrado: {e}")
-            raise GenerationError(
-                f"Modelo '{model}' no encontrado o no disponible",
-                {
-                    "error": str(e),
-                    "model": model,
-                    "available_models": list(AVAILABLE_MODELS.keys())
-                }
-            )
-        
-        except UnprocessableEntityError as e:
-            # Entidad no procesable - NO reintentar
-            logger.error(f"Entidad no procesable: {e}")
-            raise GenerationError(
-                "La API no pudo procesar la solicitud",
-                {"error": str(e)}
-            )
-        
-        except InternalServerError as e:
-            # Error interno del servidor - reintentar
-            logger.warning(f"Error interno del servidor (intento {attempt}): {e}")
-            last_error = e
-            
-            if attempt < max_retries:
-                logger.info(f"Esperando {current_delay:.1f}s antes de reintentar...")
-                time.sleep(current_delay)
-                current_delay = min(current_delay * BACKOFF_MULTIPLIER, MAX_RETRY_DELAY)
-                continue
-            else:
-                raise RetryExhaustedError(
-                    f"Error del servidor: reintentos agotados después de {max_retries} intentos",
-                    {"last_error": str(e)}
-                )
+            logger.warning(f"Rate limit alcanzado, esperando {current_delay}s...")
+            time.sleep(current_delay)
+            current_delay = min(current_delay * BACKOFF_MULTIPLIER, MAX_RETRY_DELAY)
         
         except APIConnectionError as e:
-            # Error de conexión - reintentar
-            logger.warning(f"Error de conexión (intento {attempt}): {e}")
             last_error = e
-            
-            if attempt < max_retries:
-                logger.info(f"Esperando {current_delay:.1f}s antes de reintentar...")
-                time.sleep(current_delay)
-                current_delay = min(current_delay * BACKOFF_MULTIPLIER, MAX_RETRY_DELAY)
-                continue
-            else:
-                raise RetryExhaustedError(
-                    f"Error de conexión: reintentos agotados después de {max_retries} intentos",
-                    {
-                        "last_error": str(e),
-                        "hint": "Verifica tu conexión a internet"
-                    }
-                )
+            logger.warning(f"Error de conexión, reintentando en {current_delay}s...")
+            time.sleep(current_delay)
+            current_delay = min(current_delay * BACKOFF_MULTIPLIER, MAX_RETRY_DELAY)
+        
+        except BadRequestError as e:
+            error_msg = str(e)
+            if "token" in error_msg.lower():
+                raise TokenLimitError("El prompt excede el límite de tokens", {"original_error": error_msg})
+            raise GenerationError(f"Error en la solicitud: {error_msg}", {"original_error": error_msg})
         
         except APIStatusError as e:
-            # Otros errores de estado HTTP
-            logger.warning(f"Error de estado HTTP (intento {attempt}): {e}")
-            status_code = getattr(e, 'status_code', None)
-            
-            # Errores 5xx son del servidor - reintentar
-            if status_code and status_code >= 500:
+            if e.status_code >= 500:
                 last_error = e
-                if attempt < max_retries:
-                    time.sleep(current_delay)
-                    current_delay = min(current_delay * BACKOFF_MULTIPLIER, MAX_RETRY_DELAY)
-                    continue
-            
-            # Errores 4xx son del cliente - NO reintentar
-            raise GenerationError(
-                f"Error de API (HTTP {status_code})",
-                {"error": str(e), "status_code": status_code}
-            )
-        
-        except APIError as e:
-            # Error genérico de API - reintentar si es posible
-            logger.warning(f"Error de API genérico (intento {attempt}): {e}")
-            last_error = e
-            
-            if attempt < max_retries:
+                logger.warning(f"Error del servidor ({e.status_code}), reintentando...")
                 time.sleep(current_delay)
                 current_delay = min(current_delay * BACKOFF_MULTIPLIER, MAX_RETRY_DELAY)
-                continue
             else:
-                raise RetryExhaustedError(
-                    f"Error de API: reintentos agotados después de {max_retries} intentos",
-                    {"last_error": str(e)}
-                )
-        
-        except GenerationError:
-            # Re-lanzar nuestras excepciones personalizadas
-            raise
+                raise GenerationError(f"Error de API ({e.status_code}): {str(e)}", {"status_code": e.status_code})
         
         except Exception as e:
-            # Error inesperado
-            logger.error(f"Error inesperado: {type(e).__name__}: {e}")
-            raise GenerationError(
-                f"Error inesperado durante la generación: {type(e).__name__}",
-                {"error": str(e), "type": type(e).__name__}
-            )
+            raise GenerationError(f"Error inesperado: {str(e)}", {"type": type(e).__name__})
     
-    # Si llegamos aquí, se agotaron los reintentos
     raise RetryExhaustedError(
-        f"Reintentos agotados después de {max_retries} intentos",
+        f"Se agotaron los {max_retries} reintentos",
         {"last_error": str(last_error) if last_error else "Unknown"}
     )
 
 
-def _extract_retry_after(error: Exception) -> Optional[float]:
-    """
-    Intenta extraer el tiempo de espera sugerido de un error de rate limit.
-    
-    Args:
-        error: La excepción de rate limit
-        
-    Returns:
-        float: Segundos a esperar, o None si no se puede determinar
-    """
-    try:
-        # Intentar obtener de headers si están disponibles
-        if hasattr(error, 'response') and hasattr(error.response, 'headers'):
-            retry_after = error.response.headers.get('retry-after')
-            if retry_after:
-                return float(retry_after)
-        
-        # Intentar parsear del mensaje de error
-        error_str = str(error)
-        import re
-        match = re.search(r'(\d+(?:\.\d+)?)\s*(?:seconds?|s)', error_str.lower())
-        if match:
-            return float(match.group(1))
-        
-    except Exception:
-        pass
-    
-    return None
-
-
 # ============================================================================
-# FUNCIONES DE GENERACIÓN DE CONTENIDO
+# FUNCIONES DE GENERACIÓN
 # ============================================================================
 
 def generate_content(
@@ -611,30 +350,7 @@ def generate_content(
     temperature: float = DEFAULT_TEMPERATURE,
     system_prompt: Optional[str] = None,
 ) -> GenerationResult:
-    """
-    Genera contenido usando Claude API.
-    
-    Función de alto nivel que wrappea call_claude_api y retorna
-    un GenerationResult con toda la información de la generación.
-    
-    Args:
-        prompt: El prompt para generar contenido
-        model: Modelo de Claude a usar
-        max_tokens: Máximo de tokens en la respuesta
-        temperature: Temperatura de generación
-        system_prompt: Prompt de sistema opcional
-        
-    Returns:
-        GenerationResult: Resultado con contenido y metadatos
-        
-    Example:
-        >>> result = generate_content(
-        ...     prompt="Escribe sobre tarjetas gráficas",
-        ...     model="claude-sonnet-4-20250514"
-        ... )
-        >>> if result.success:
-        ...     print(result.content)
-    """
+    """Genera contenido usando Claude API."""
     start_time = time.time()
     
     try:
@@ -694,48 +410,15 @@ def generate_content(
 
 def generate_with_stages(
     stage1_prompt: str,
-    stage2_prompt_builder: callable,
-    stage3_prompt_builder: callable,
+    stage2_prompt_builder: Callable[[str], str],
+    stage3_prompt_builder: Callable[[str, str], str],
     model: str = DEFAULT_MODEL,
     max_tokens: int = MAX_TOKENS,
     temperature: float = DEFAULT_TEMPERATURE,
     system_prompt: Optional[str] = None,
-    on_stage_complete: Optional[callable] = None,
+    on_stage_complete: Optional[Callable[[int, GenerationResult], None]] = None,
 ) -> Tuple[GenerationResult, GenerationResult, GenerationResult]:
-    """
-    Genera contenido en 3 etapas (borrador, análisis, final).
-    
-    Este es el flujo principal de generación del Content Generator:
-    1. Etapa 1: Genera el borrador inicial
-    2. Etapa 2: Analiza y critica el borrador
-    3. Etapa 3: Genera la versión final con correcciones
-    
-    Args:
-        stage1_prompt: Prompt para la etapa 1 (borrador)
-        stage2_prompt_builder: Función que recibe el borrador y retorna el prompt para análisis
-        stage3_prompt_builder: Función que recibe borrador y análisis, retorna prompt final
-        model: Modelo de Claude a usar
-        max_tokens: Máximo de tokens por etapa
-        temperature: Temperatura de generación
-        system_prompt: Prompt de sistema opcional
-        on_stage_complete: Callback opcional llamado al completar cada etapa
-        
-    Returns:
-        Tuple[GenerationResult, GenerationResult, GenerationResult]:
-            Resultados de las 3 etapas
-            
-    Example:
-        >>> def build_stage2(draft):
-        ...     return f"Analiza este borrador: {draft}"
-        >>> def build_stage3(draft, analysis):
-        ...     return f"Corrige: {draft}\\nSegún: {analysis}"
-        >>> r1, r2, r3 = generate_with_stages(
-        ...     stage1_prompt="Genera artículo...",
-        ...     stage2_prompt_builder=build_stage2,
-        ...     stage3_prompt_builder=build_stage3
-        ... )
-    """
-    results = []
+    """Genera contenido en 3 etapas (borrador, análisis, final)."""
     
     # ============== ETAPA 1: BORRADOR ==============
     logger.info("=== ETAPA 1: Generando borrador ===")
@@ -748,28 +431,19 @@ def generate_with_stages(
         system_prompt=system_prompt,
     )
     result1 = GenerationResult(
-        success=result1.success,
-        content=result1.content,
-        stage=1,
-        model=result1.model,
-        tokens_used=result1.tokens_used,
-        generation_time=result1.generation_time,
-        error=result1.error,
-        metadata=result1.metadata,
+        success=result1.success, content=result1.content, stage=1, model=result1.model,
+        tokens_used=result1.tokens_used, generation_time=result1.generation_time,
+        error=result1.error, metadata=result1.metadata,
     )
-    results.append(result1)
     
     if on_stage_complete:
         on_stage_complete(1, result1)
     
     if not result1.success:
         logger.error("Etapa 1 falló, abortando")
-        # Retornar resultados vacíos para etapas 2 y 3
-        empty_result = GenerationResult(
-            success=False, content="", stage=2, model=model,
-            tokens_used=0, generation_time=0, error="Etapa previa falló"
-        )
-        return result1, empty_result, GenerationResult(**{**empty_result.__dict__, 'stage': 3})
+        empty2 = GenerationResult(success=False, content="", stage=2, model=model, tokens_used=0, generation_time=0, error="Etapa previa falló")
+        empty3 = GenerationResult(success=False, content="", stage=3, model=model, tokens_used=0, generation_time=0, error="Etapa previa falló")
+        return result1, empty2, empty3
     
     # ============== ETAPA 2: ANÁLISIS ==============
     logger.info("=== ETAPA 2: Analizando borrador ===")
@@ -780,31 +454,22 @@ def generate_with_stages(
         prompt=stage2_prompt,
         model=model,
         max_tokens=max_tokens,
-        temperature=0.3,  # Menos creatividad para análisis
+        temperature=0.3,
         system_prompt=system_prompt,
     )
     result2 = GenerationResult(
-        success=result2.success,
-        content=result2.content,
-        stage=2,
-        model=result2.model,
-        tokens_used=result2.tokens_used,
-        generation_time=result2.generation_time,
-        error=result2.error,
-        metadata=result2.metadata,
+        success=result2.success, content=result2.content, stage=2, model=result2.model,
+        tokens_used=result2.tokens_used, generation_time=result2.generation_time,
+        error=result2.error, metadata=result2.metadata,
     )
-    results.append(result2)
     
     if on_stage_complete:
         on_stage_complete(2, result2)
     
     if not result2.success:
         logger.error("Etapa 2 falló, abortando")
-        empty_result = GenerationResult(
-            success=False, content="", stage=3, model=model,
-            tokens_used=0, generation_time=0, error="Etapa previa falló"
-        )
-        return result1, result2, empty_result
+        empty3 = GenerationResult(success=False, content="", stage=3, model=model, tokens_used=0, generation_time=0, error="Etapa previa falló")
+        return result1, result2, empty3
     
     # ============== ETAPA 3: VERSIÓN FINAL ==============
     logger.info("=== ETAPA 3: Generando versión final ===")
@@ -819,20 +484,13 @@ def generate_with_stages(
         system_prompt=system_prompt,
     )
     result3 = GenerationResult(
-        success=result3.success,
-        content=result3.content,
-        stage=3,
-        model=result3.model,
-        tokens_used=result3.tokens_used,
-        generation_time=result3.generation_time,
-        error=result3.error,
-        metadata=result3.metadata,
+        success=result3.success, content=result3.content, stage=3, model=result3.model,
+        tokens_used=result3.tokens_used, generation_time=result3.generation_time,
+        error=result3.error, metadata=result3.metadata,
     )
     
     if on_stage_complete:
         on_stage_complete(3, result3)
-    
-    logger.info("=== Generación en 3 etapas completada ===")
     
     return result1, result2, result3
 
@@ -841,128 +499,191 @@ def generate_with_stages(
 # FUNCIONES DE VALIDACIÓN Y EXTRACCIÓN
 # ============================================================================
 
-def validate_response(content: str) -> bool:
-    """
-    Valida que el contenido generado cumple requisitos mínimos.
+def validate_response(content: str) -> Dict[str, Any]:
+    """Valida el contenido de la respuesta."""
+    validation = {
+        "is_valid": True,
+        "has_html": bool(re.search(r'<[^>]+>', content)),
+        "has_article": '<article' in content.lower(),
+        "has_headings": bool(re.search(r'<h[1-6]', content, re.I)),
+        "word_count": len(re.sub(r'<[^>]+>', '', content).split()),
+        "errors": [],
+        "warnings": [],
+    }
     
-    Args:
-        content: Contenido HTML a validar
-        
-    Returns:
-        bool: True si el contenido es válido
-    """
-    if not content or not content.strip():
-        return False
+    if not validation["has_html"]:
+        validation["warnings"].append("No se detectó contenido HTML")
     
-    # Debe tener al menos algún contenido HTML básico
-    has_html = bool(re.search(r'<[^>]+>', content))
+    if validation["word_count"] < 100:
+        validation["warnings"].append(f"Contenido muy corto: {validation['word_count']} palabras")
     
-    # Debe tener longitud mínima razonable
-    min_length = 100
-    
-    return has_html and len(content.strip()) >= min_length
+    return validation
 
 
 def extract_html_content(content: str) -> str:
-    """
-    Extrae contenido HTML limpio de la respuesta.
+    """Extrae el contenido HTML limpio de la respuesta."""
+    # Buscar bloque HTML entre ```html ... ```
+    html_match = re.search(r'```html\s*(.*?)\s*```', content, re.DOTALL | re.IGNORECASE)
+    if html_match:
+        return html_match.group(1).strip()
     
-    Elimina bloques de código markdown si existen y limpia
-    el contenido para obtener solo el HTML.
+    # Buscar bloque entre ``` ... ```
+    code_match = re.search(r'```\s*(.*?)\s*```', content, re.DOTALL)
+    if code_match:
+        potential_html = code_match.group(1).strip()
+        if '<' in potential_html and '>' in potential_html:
+            return potential_html
     
-    Args:
-        content: Contenido potencialmente con markdown
-        
-    Returns:
-        str: Contenido HTML limpio
-    """
-    if not content:
-        return ""
+    # Buscar desde <article> hasta </article>
+    article_match = re.search(r'(<article[^>]*>.*?</article>)', content, re.DOTALL | re.IGNORECASE)
+    if article_match:
+        return article_match.group(1).strip()
     
-    # Eliminar bloques de código markdown
-    # Patrón: ```html ... ``` o ```...```
-    code_block_pattern = r'```(?:html)?\s*([\s\S]*?)\s*```'
-    matches = re.findall(code_block_pattern, content)
+    # Buscar contenido entre tags HTML
+    if '<' in content and '>' in content:
+        first_tag = content.find('<')
+        last_tag = content.rfind('>') + 1
+        if first_tag < last_tag:
+            return content[first_tag:last_tag].strip()
     
-    if matches:
-        # Usar el contenido del bloque de código más largo
-        content = max(matches, key=len)
-    
-    # Limpiar espacios al inicio y final
-    content = content.strip()
-    
-    # Si empieza con <style> o <article>, es HTML válido
-    if content.startswith('<style>') or content.startswith('<article>'):
-        return content
-    
-    # Intentar encontrar el inicio del HTML
-    html_start_patterns = [
-        r'(<style>[\s\S]*)',
-        r'(<article>[\s\S]*)',
-        r'(<!DOCTYPE[\s\S]*)',
-        r'(<html[\s\S]*)',
-    ]
-    
-    for pattern in html_start_patterns:
-        match = re.search(pattern, content, re.IGNORECASE)
-        if match:
-            return match.group(1).strip()
-    
-    # Si no se encuentra patrón HTML claro, retornar el contenido limpio
-    return content
+    return content.strip()
 
 
 def count_tokens(text: str) -> int:
-    """
-    Estima el número de tokens en un texto.
-    
-    Usa una aproximación simple basada en caracteres/palabras.
-    Para conteo exacto, se debería usar el tokenizer de Anthropic.
-    
-    Args:
-        text: Texto a contar
-        
-    Returns:
-        int: Número estimado de tokens
-    """
-    if not text:
-        return 0
-    
-    # Aproximación: ~4 caracteres por token en inglés/español
-    # Esto es una estimación conservadora
-    char_estimate = len(text) // 4
-    
-    # Alternativa basada en palabras: ~0.75 tokens por palabra
-    word_count = len(text.split())
-    word_estimate = int(word_count * 1.3)
-    
-    # Usar el mayor de los dos para ser conservadores
-    return max(char_estimate, word_estimate)
+    """Estima el número de tokens en un texto (~4 caracteres por token)."""
+    return len(text) // 4
 
 
-def estimate_prompt_tokens(
-    prompt: str,
-    system_prompt: Optional[str] = None
-) -> int:
-    """
-    Estima tokens totales de un prompt (incluyendo system prompt).
-    
-    Args:
-        prompt: Prompt principal
-        system_prompt: Prompt de sistema opcional
-        
-    Returns:
-        int: Tokens estimados
-    """
+def estimate_prompt_tokens(prompt: str, system_prompt: Optional[str] = None) -> int:
+    """Estima tokens totales del prompt incluyendo system."""
     total = count_tokens(prompt)
-    
     if system_prompt:
         total += count_tokens(system_prompt)
-    
-    # Añadir overhead por formato de mensaje (~50 tokens)
-    total += 50
-    
     return total
+
+
+# ============================================================================
+# CLASE CONTENTGENERATOR
+# ============================================================================
+
+class ContentGenerator:
+    """
+    Clase principal para generación de contenido SEO.
+    
+    Encapsula la lógica de generación en 3 etapas:
+    1. Borrador inicial
+    2. Análisis crítico
+    3. Versión final
+    
+    Example:
+        >>> generator = ContentGenerator(api_key="sk-ant-...")
+        >>> result = generator.generate(prompt="Escribe sobre...")
+        >>> if result.success:
+        ...     print(result.content)
+    """
+    
+    def __init__(
+        self,
+        api_key: Optional[str] = None,
+        model: str = DEFAULT_MODEL,
+        max_tokens: int = MAX_TOKENS,
+        temperature: float = DEFAULT_TEMPERATURE,
+    ):
+        """
+        Inicializa el generador de contenido.
+        
+        Args:
+            api_key: API key de Anthropic (opcional, usa env si no se provee)
+            model: Modelo de Claude a usar
+            max_tokens: Máximo de tokens por respuesta
+            temperature: Temperatura de generación
+        """
+        self.model = model
+        self.max_tokens = max_tokens
+        self.temperature = temperature
+        self._api_key = api_key
+        
+        # Si se proporciona api_key, configurarla globalmente
+        if api_key:
+            global CLAUDE_API_KEY
+            CLAUDE_API_KEY = api_key
+            reset_client()
+        
+        if not _anthropic_available:
+            logger.warning("Anthropic SDK no disponible")
+        
+        logger.info(f"ContentGenerator inicializado con modelo {model}")
+    
+    def generate(
+        self,
+        prompt: str,
+        system_prompt: Optional[str] = None,
+        temperature: Optional[float] = None,
+        max_tokens: Optional[int] = None,
+    ) -> GenerationResult:
+        """
+        Genera contenido con un prompt simple.
+        
+        Args:
+            prompt: Prompt para generar
+            system_prompt: Prompt de sistema opcional
+            temperature: Override de temperatura
+            max_tokens: Override de max_tokens
+            
+        Returns:
+            GenerationResult con el contenido generado
+        """
+        return generate_content(
+            prompt=prompt,
+            model=self.model,
+            max_tokens=max_tokens or self.max_tokens,
+            temperature=temperature or self.temperature,
+            system_prompt=system_prompt,
+        )
+    
+    def generate_with_stages(
+        self,
+        stage1_prompt: str,
+        stage2_prompt_builder: Callable[[str], str],
+        stage3_prompt_builder: Callable[[str, str], str],
+        system_prompt: Optional[str] = None,
+        on_stage_complete: Optional[Callable[[int, GenerationResult], None]] = None,
+    ) -> Tuple[GenerationResult, GenerationResult, GenerationResult]:
+        """
+        Genera contenido en 3 etapas.
+        
+        Args:
+            stage1_prompt: Prompt para el borrador
+            stage2_prompt_builder: Función para construir prompt de análisis
+            stage3_prompt_builder: Función para construir prompt final
+            system_prompt: Prompt de sistema opcional
+            on_stage_complete: Callback al completar cada etapa
+            
+        Returns:
+            Tuple de 3 GenerationResult
+        """
+        return generate_with_stages(
+            stage1_prompt=stage1_prompt,
+            stage2_prompt_builder=stage2_prompt_builder,
+            stage3_prompt_builder=stage3_prompt_builder,
+            model=self.model,
+            max_tokens=self.max_tokens,
+            temperature=self.temperature,
+            system_prompt=system_prompt,
+            on_stage_complete=on_stage_complete,
+        )
+    
+    def validate_content(self, content: str) -> Dict[str, Any]:
+        """Valida el contenido generado."""
+        return validate_response(content)
+    
+    def extract_html(self, content: str) -> str:
+        """Extrae HTML limpio del contenido."""
+        return extract_html_content(content)
+    
+    def is_available(self) -> bool:
+        """Verifica si el generador está listo para usar."""
+        return is_api_available()
 
 
 # ============================================================================
@@ -970,12 +691,7 @@ def estimate_prompt_tokens(
 # ============================================================================
 
 def is_api_available() -> bool:
-    """
-    Verifica si la API de Anthropic está disponible y configurada.
-    
-    Returns:
-        bool: True si la API está lista para usar
-    """
+    """Verifica si la API de Anthropic está disponible."""
     if not _anthropic_available:
         return False
     
@@ -989,15 +705,7 @@ def is_api_available() -> bool:
 
 
 def get_model_info(model: str) -> Dict[str, Any]:
-    """
-    Obtiene información sobre un modelo específico.
-    
-    Args:
-        model: ID del modelo
-        
-    Returns:
-        dict: Información del modelo
-    """
+    """Obtiene información sobre un modelo."""
     return {
         'id': model,
         'name': AVAILABLE_MODELS.get(model, model),
@@ -1007,12 +715,7 @@ def get_model_info(model: str) -> Dict[str, Any]:
 
 
 def list_available_models() -> List[Dict[str, str]]:
-    """
-    Lista todos los modelos disponibles.
-    
-    Returns:
-        list: Lista de diccionarios con info de modelos
-    """
+    """Lista todos los modelos disponibles."""
     return [
         {'id': model_id, 'name': name}
         for model_id, name in AVAILABLE_MODELS.items()
@@ -1026,6 +729,9 @@ def list_available_models() -> List[Dict[str, str]]:
 __all__ = [
     # Versión
     '__version__',
+    
+    # Clase principal
+    'ContentGenerator',
     
     # Excepciones
     'GenerationError',
