@@ -1,6 +1,6 @@
 """
 Config Module - PcComponentes Content Generator
-Versión 4.2.0
+Versión 4.3.0
 
 Paquete de configuración que centraliza todos los settings,
 constantes de marca, y arquetipos de contenido.
@@ -27,7 +27,7 @@ logger = logging.getLogger(__name__)
 # VERSIÓN DEL MÓDULO
 # ============================================================================
 
-__version__ = "4.2.0"
+__version__ = "4.3.0"
 
 
 # ============================================================================
@@ -40,6 +40,7 @@ try:
         APP_VERSION,
         APP_NAME,
         APP_AUTHOR,
+        APP_TITLE,  # Alias para compatibilidad
         
         # API Keys - USAR CLAUDE_API_KEY
         CLAUDE_API_KEY,
@@ -50,12 +51,17 @@ try:
         
         # Modelo Claude
         DEFAULT_MODEL,
+        CLAUDE_MODEL,  # Alias para compatibilidad
         AVAILABLE_MODELS,
         MAX_TOKENS,
         MAX_INPUT_TOKENS,
         DEFAULT_TEMPERATURE,
+        TEMPERATURE,  # Alias para compatibilidad
         API_MAX_RETRIES,
         API_RETRY_DELAY,
+        
+        # Debug
+        DEBUG_MODE,
         
         # Contenido
         DEFAULT_CONTENT_LENGTH,
@@ -212,6 +218,36 @@ except ImportError as e:
 
 
 # ============================================================================
+# ALIASES PARA COMPATIBILIDAD CON APP.PY
+# ============================================================================
+
+# Alias de get_arquetipo_by_code para compatibilidad
+def get_arquetipo(code: str):
+    """
+    Obtiene un arquetipo por su código.
+    Alias de get_arquetipo_by_code para compatibilidad con app.py.
+    
+    Args:
+        code: Código del arquetipo (GC, RV, CP, TU, TP)
+        
+    Returns:
+        Dict con la configuración del arquetipo o None
+    """
+    return get_arquetipo_by_code(code)
+
+
+def list_arquetipos():
+    """
+    Lista todos los arquetipos disponibles.
+    Alias para compatibilidad con app.py.
+    
+    Returns:
+        List de códigos de arquetipos
+    """
+    return list(ARQUETIPOS.keys())
+
+
+# ============================================================================
 # FUNCIONES DE UTILIDAD
 # ============================================================================
 
@@ -281,6 +317,7 @@ __all__ = [
     'APP_VERSION',
     'APP_NAME',
     'APP_AUTHOR',
+    'APP_TITLE',  # Alias de APP_NAME
     
     # API Keys
     'CLAUDE_API_KEY',
@@ -291,12 +328,17 @@ __all__ = [
     
     # Modelo
     'DEFAULT_MODEL',
+    'CLAUDE_MODEL',  # Alias de DEFAULT_MODEL
     'AVAILABLE_MODELS',
     'MAX_TOKENS',
     'MAX_INPUT_TOKENS',
     'DEFAULT_TEMPERATURE',
+    'TEMPERATURE',  # Alias de DEFAULT_TEMPERATURE
     'API_MAX_RETRIES',
     'API_RETRY_DELAY',
+    
+    # Debug
+    'DEBUG_MODE',
     
     # Contenido
     'DEFAULT_CONTENT_LENGTH',
@@ -353,6 +395,8 @@ __all__ = [
     'get_arquetipo_by_code',
     'get_arquetipo_names',
     'get_default_arquetipo',
+    'get_arquetipo',  # Alias para compatibilidad con app.py
+    'list_arquetipos',  # Alias para compatibilidad con app.py
     
     # === UTILIDADES ===
     'is_settings_available',
