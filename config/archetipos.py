@@ -1,6 +1,6 @@
 """
 Definición de arquetipos de contenido - PcComponentes
-Versión 4.1.1
+Versión 4.3.0
 
 Este módulo contiene los 18 arquetipos de contenido con sus campos específicos.
 Cada arquetipo define:
@@ -9,16 +9,25 @@ Cada arquetipo define:
 - Longitud por defecto
 - Casos de uso
 - Campos específicos para el formulario
+
+Autor: PcComponentes - Product Discovery & Content
 """
 
-from typing import Dict, List, Optional
+from typing import Dict, List, Optional, Any
+
+
+# ============================================================================
+# VERSIÓN
+# ============================================================================
+
+__version__ = "4.3.0"
 
 
 # ============================================================================
 # ARQUETIPOS COMPLETOS CON CAMPOS ESPECÍFICOS
 # ============================================================================
 
-ARQUETIPOS = {
+ARQUETIPOS: Dict[str, Dict[str, Any]] = {
     "ARQ-1": {
         "code": "ARQ-1",
         "name": "📰 Noticia / Actualidad",
@@ -71,31 +80,31 @@ ARQUETIPOS = {
             "tarea_objetivo": {
                 "label": "¿Qué tarea se va a explicar?",
                 "type": "text",
-                "placeholder": "Ej: Configurar el robot aspirador Xiaomi E5 para limpieza programada",
-                "help": "Objetivo claro que el usuario quiere conseguir"
+                "placeholder": "Ej: Configurar el mapeo por habitaciones en Roborock",
+                "help": "Define claramente el objetivo del tutorial"
             },
             "requisitos_previos": {
                 "label": "Requisitos previos",
                 "type": "textarea",
-                "placeholder": "Ej: Tener la app Xiaomi Home instalada, WiFi 2.4GHz configurado, robot cargado al 100%",
-                "help": "Qué necesita el usuario antes de empezar"
+                "placeholder": "Ej: Tener la app Roborock instalada, WiFi 2.4GHz, robot con batería >20%",
+                "help": "Qué se necesita antes de empezar"
             },
-            "tiempo_estimado": {
-                "label": "Tiempo estimado",
-                "type": "text",
-                "placeholder": "Ej: 10-15 minutos",
-                "help": "Cuánto tardará el proceso"
-            },
-            "dificultad": {
+            "nivel_dificultad": {
                 "label": "Nivel de dificultad",
                 "type": "text",
-                "placeholder": "Ej: Principiante / Intermedio / Avanzado",
-                "help": "Para qué nivel de usuario está pensado"
+                "placeholder": "Ej: Fácil (5 min) / Medio (15 min) / Avanzado (30+ min)",
+                "help": "Dificultad y tiempo estimado"
             },
-            "puntos_criticos": {
-                "label": "Puntos críticos o errores comunes",
+            "pasos_principales": {
+                "label": "Pasos principales (uno por línea)",
                 "type": "textarea",
-                "placeholder": "Ej: Asegúrate de conectar al WiFi 2.4GHz y NO 5GHz. Si no aparece el robot, reinicia la app",
+                "placeholder": "1. Abrir la app\n2. Seleccionar el robot\n3. Ir a Ajustes > Mapeo\n4. Ejecutar limpieza completa",
+                "help": "Los pasos clave del proceso"
+            },
+            "errores_comunes": {
+                "label": "Errores comunes a evitar",
+                "type": "textarea",
+                "placeholder": "Ej: No mover el robot durante el mapeo / No cerrar puertas / Si no aparece el robot, reinicia la app",
                 "help": "Problemas típicos y cómo evitarlos"
             }
         }
@@ -183,92 +192,74 @@ ARQUETIPOS = {
         "description": "Comparación directa entre 2-3 productos similares",
         "funnel": "Middle",
         "default_length": 1600,
-        "use_case": "Ayudar a elegir entre alternativas directas",
+        "use_case": "Ayudar a elegir entre alternativas populares",
         "campos_especificos": {
-            "producto_a_nombre": {
-                "label": "Producto A - Nombre",
+            "producto_a": {
+                "label": "Producto A",
                 "type": "text",
                 "placeholder": "Ej: Xiaomi Robot Vacuum E5",
                 "help": "Primer producto a comparar"
             },
-            "producto_a_caracteristicas": {
-                "label": "Producto A - Características clave",
-                "type": "textarea",
-                "placeholder": "Ej: 2000Pa succión, 110 min autonomía, WiFi, fregado básico, 59€",
-                "help": "Specs principales del producto A"
-            },
-            "producto_a_mejor_para": {
-                "label": "Producto A - Mejor para casos de uso",
-                "type": "textarea",
-                "placeholder": "Ej: Presupuesto ajustado, pisos pequeños-medianos, mantenimiento diario básico",
-                "help": "Cuándo elegir el producto A"
-            },
-            "producto_b_nombre": {
-                "label": "Producto B - Nombre",
+            "producto_b": {
+                "label": "Producto B",
                 "type": "text",
                 "placeholder": "Ej: Roborock Q7",
                 "help": "Segundo producto a comparar"
             },
-            "producto_b_caracteristicas": {
-                "label": "Producto B - Características clave",
-                "type": "textarea",
-                "placeholder": "Ej: 2700Pa succión, 180 min autonomía, mapeo láser, fregado inteligente, 99€",
-                "help": "Specs principales del producto B"
-            },
-            "producto_b_mejor_para": {
-                "label": "Producto B - Mejor para casos de uso",
-                "type": "textarea",
-                "placeholder": "Ej: Casas grandes, necesidad de mapeo por habitaciones, presupuesto medio",
-                "help": "Cuándo elegir el producto B"
+            "producto_c": {
+                "label": "Producto C (opcional)",
+                "type": "text",
+                "placeholder": "Ej: Conga 3490 (opcional)",
+                "help": "Tercer producto si aplica"
             },
             "criterios_comparacion": {
-                "label": "Criterios principales de comparación",
+                "label": "Criterios de comparación",
                 "type": "textarea",
-                "placeholder": "Ej: Potencia de succión, autonomía, navegación, fregado, precio, app móvil",
-                "help": "En qué aspectos se van a comparar"
+                "placeholder": "Succión\nNavegación\nAutonomía\nPrecio\nApp\nFregado",
+                "help": "Aspectos a comparar"
+            },
+            "diferencias_clave": {
+                "label": "Diferencias clave",
+                "type": "textarea",
+                "placeholder": "Ej: Succión: Roborock +700Pa | Autonomía: Roborock +70min | Precio: Xiaomi -40€",
+                "help": "Las diferencias más importantes"
             }
         }
     },
     
     "ARQ-6": {
         "code": "ARQ-6",
-        "name": "🔥 Deal Alert / Chollo",
-        "description": "Alerta de oferta destacada con urgencia",
+        "name": "🔥 Oferta / Chollo",
+        "description": "Análisis de oferta destacada con urgencia",
         "funnel": "Bottom",
         "default_length": 1000,
-        "use_case": "Ofertas flash, chollos limitados, precio histórico",
+        "use_case": "Ofertas flash, Black Friday, descuentos destacados",
         "campos_especificos": {
             "precio_actual": {
                 "label": "Precio actual",
                 "type": "text",
-                "placeholder": "Ej: 59€",
-                "help": "Precio de la oferta"
+                "placeholder": "Ej: 199€",
+                "help": "Precio con descuento"
             },
-            "precio_habitual": {
-                "label": "Precio habitual",
+            "precio_anterior": {
+                "label": "Precio anterior/PVP",
                 "type": "text",
-                "placeholder": "Ej: 89€",
-                "help": "Precio normal sin oferta"
+                "placeholder": "Ej: 299€",
+                "help": "Precio de referencia"
             },
-            "ahorro_total": {
-                "label": "Ahorro total",
+            "descuento": {
+                "label": "Descuento",
                 "type": "text",
-                "placeholder": "Ej: 30€ (-34%)",
-                "help": "Cuánto se ahorra"
+                "placeholder": "Ej: -33% / Ahorro de 100€",
+                "help": "Porcentaje o cantidad de ahorro"
             },
             "duracion_oferta": {
                 "label": "Duración de la oferta",
                 "type": "text",
-                "placeholder": "Ej: Solo hasta medianoche / Mientras duren existencias / 72 horas",
-                "help": "Cuánto tiempo estará disponible"
+                "placeholder": "Ej: Hasta agotar stock / Hasta 27 nov / Solo hoy",
+                "help": "Cuánto dura la oferta"
             },
-            "stock_disponible": {
-                "label": "Stock o unidades disponibles",
-                "type": "text",
-                "placeholder": "Ej: Quedan menos de 20 unidades / Stock limitado",
-                "help": "Información de disponibilidad para urgencia"
-            },
-            "precio_historico": {
+            "historico_precio": {
                 "label": "¿Es precio mínimo histórico?",
                 "type": "text",
                 "placeholder": "Ej: Sí, primera vez por debajo de 60€ / No, pero mejor precio del mes",
@@ -350,43 +341,37 @@ ARQUETIPOS = {
                 "placeholder": "Ej: No tendrás mapeo láser ni autovaciado, pero la limpieza básica es efectiva",
                 "help": "Qué no esperar en este rango (en positivo)"
             },
-            "mejor_opcion": {
-                "label": "Mejor opción en el rango",
-                "type": "text",
-                "placeholder": "Ej: Xiaomi E5 a 59€ es imbatible en calidad-precio",
-                "help": "Producto destacado del presupuesto"
+            "productos_recomendados": {
+                "label": "Productos recomendados en el rango",
+                "type": "textarea",
+                "placeholder": "Xiaomi E5 (79€)\nConga 1090 (89€)\niRobot Roomba i1 (99€)",
+                "help": "Mejores opciones en ese presupuesto"
             }
         }
     },
     
     "ARQ-9": {
         "code": "ARQ-9",
-        "name": "🥊 Versus Detallado",
-        "description": "Enfrentamiento profundo producto a producto con ganador claro",
-        "funnel": "Bottom",
-        "default_length": 2000,
-        "use_case": "Decisión de compra entre dos modelos muy similares",
+        "name": "⚖️ Comparativa A vs B - Ganador",
+        "description": "Comparación con ganador claro según criterio",
+        "funnel": "Middle",
+        "default_length": 1600,
+        "use_case": "Versus entre alternativas populares con recomendación",
         "campos_especificos": {
-            "producto_1": {
-                "label": "Producto 1",
+            "producto_a": {
+                "label": "Producto A",
                 "type": "text",
                 "placeholder": "Ej: Xiaomi Robot Vacuum E5",
-                "help": "Primer contendiente"
+                "help": "Primer producto"
             },
-            "producto_2": {
-                "label": "Producto 2",
+            "producto_b": {
+                "label": "Producto B",
                 "type": "text",
                 "placeholder": "Ej: Roborock Q7",
-                "help": "Segundo contendiente"
+                "help": "Segundo producto"
             },
-            "categorias_versus": {
-                "label": "Categorías de enfrentamiento",
-                "type": "textarea",
-                "placeholder": "Ej: Potencia de succión, Autonomía, Navegación, Fregado, App móvil, Precio, Ruido",
-                "help": "Aspectos específicos a comparar (separa por comas o líneas)"
-            },
-            "ganador_categorias": {
-                "label": "Ganadores por categoría",
+            "ganador_por_criterio": {
+                "label": "Ganador por criterio",
                 "type": "textarea",
                 "placeholder": "Ej: Succión: Roborock +700Pa | Autonomía: Roborock +70min | Precio: Xiaomi -40€",
                 "help": "Quién gana en cada categoría"
@@ -715,9 +700,9 @@ ARQUETIPOS = {
 # FUNCIONES DE UTILIDAD
 # ============================================================================
 
-def get_arquetipo(code: str) -> Optional[Dict]:
+def get_arquetipo(code: str) -> Optional[Dict[str, Any]]:
     """
-    Obtiene un arquetipo por su código
+    Obtiene un arquetipo por su código.
     
     Args:
         code: Código del arquetipo (ej: "ARQ-1")
@@ -730,7 +715,7 @@ def get_arquetipo(code: str) -> Optional[Dict]:
 
 def list_arquetipos() -> List[str]:
     """
-    Lista todos los códigos de arquetipos disponibles
+    Lista todos los códigos de arquetipos disponibles.
     
     Returns:
         Lista de códigos (ej: ["ARQ-1", "ARQ-2", ...])
@@ -738,9 +723,42 @@ def list_arquetipos() -> List[str]:
     return list(ARQUETIPOS.keys())
 
 
-def get_arquetipos_by_funnel(funnel: str) -> List[Dict]:
+def get_arquetipo_by_code(code: str) -> Optional[Dict[str, Any]]:
     """
-    Obtiene arquetipos filtrados por embudo de conversión
+    Alias de get_arquetipo para compatibilidad.
+    
+    Args:
+        code: Código del arquetipo
+        
+    Returns:
+        Dict con datos del arquetipo o None
+    """
+    return get_arquetipo(code)
+
+
+def get_arquetipo_names() -> Dict[str, str]:
+    """
+    Obtiene un diccionario con código -> nombre de cada arquetipo.
+    
+    Returns:
+        Dict con código como key y nombre como value
+    """
+    return {k: v['name'] for k, v in ARQUETIPOS.items()}
+
+
+def get_default_arquetipo() -> Dict[str, Any]:
+    """
+    Obtiene el arquetipo por defecto (ARQ-4: Review).
+    
+    Returns:
+        Dict con la configuración del arquetipo
+    """
+    return ARQUETIPOS['ARQ-4']
+
+
+def get_arquetipos_by_funnel(funnel: str) -> List[Dict[str, Any]]:
+    """
+    Obtiene arquetipos filtrados por embudo de conversión.
     
     Args:
         funnel: "Top", "Middle" o "Bottom"
@@ -751,9 +769,9 @@ def get_arquetipos_by_funnel(funnel: str) -> List[Dict]:
     return [arq for arq in ARQUETIPOS.values() if arq['funnel'] == funnel]
 
 
-def get_arquetipo_by_use_case(search_term: str) -> List[Dict]:
+def get_arquetipo_by_use_case(search_term: str) -> List[Dict[str, Any]]:
     """
-    Busca arquetipos por término en su caso de uso
+    Busca arquetipos por término en su caso de uso.
     
     Args:
         search_term: Término a buscar (ej: "Black Friday")
@@ -770,7 +788,7 @@ def get_arquetipo_by_use_case(search_term: str) -> List[Dict]:
 
 def validate_arquetipo_code(code: str) -> bool:
     """
-    Valida si un código de arquetipo existe
+    Valida si un código de arquetipo existe.
     
     Args:
         code: Código a validar
@@ -783,9 +801,80 @@ def validate_arquetipo_code(code: str) -> bool:
 
 def get_arquetipo_count() -> int:
     """
-    Obtiene el número total de arquetipos
+    Obtiene el número total de arquetipos.
     
     Returns:
         Número de arquetipos disponibles
     """
     return len(ARQUETIPOS)
+
+
+def get_arquetipo_options() -> List[tuple]:
+    """
+    Obtiene lista de opciones para selectores de UI.
+    
+    Returns:
+        Lista de tuplas (código, nombre_completo)
+    """
+    return [(k, f"{k}: {v['name']}") for k, v in ARQUETIPOS.items()]
+
+
+def get_arquetipo_structure(code: str) -> List[str]:
+    """
+    Obtiene los campos específicos de un arquetipo.
+    
+    Args:
+        code: Código del arquetipo
+        
+    Returns:
+        Lista de nombres de campos o lista vacía
+    """
+    arq = get_arquetipo(code)
+    if arq and 'campos_especificos' in arq:
+        return list(arq['campos_especificos'].keys())
+    return []
+
+
+def get_arquetipo_target_length(code: str) -> int:
+    """
+    Obtiene la longitud por defecto de un arquetipo.
+    
+    Args:
+        code: Código del arquetipo
+        
+    Returns:
+        Longitud por defecto en palabras
+    """
+    arq = get_arquetipo(code)
+    return arq.get('default_length', 1500) if arq else 1500
+
+
+# ============================================================================
+# EXPORTS
+# ============================================================================
+
+__all__ = [
+    # Versión
+    '__version__',
+    
+    # Constantes
+    'ARQUETIPOS',
+    
+    # Funciones principales
+    'get_arquetipo',
+    'list_arquetipos',
+    'get_arquetipo_by_code',
+    'get_arquetipo_names',
+    'get_default_arquetipo',
+    
+    # Funciones de filtrado
+    'get_arquetipos_by_funnel',
+    'get_arquetipo_by_use_case',
+    
+    # Funciones auxiliares
+    'validate_arquetipo_code',
+    'get_arquetipo_count',
+    'get_arquetipo_options',
+    'get_arquetipo_structure',
+    'get_arquetipo_target_length',
+]
