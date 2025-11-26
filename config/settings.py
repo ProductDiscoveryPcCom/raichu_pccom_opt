@@ -1,623 +1,414 @@
 """
-Configuración Global - PcComponentes Content Generator
+Settings - PcComponentes Content Generator
 Versión 4.2.0
 
-Configuración centralizada de la aplicación incluyendo:
-- API keys (Claude, SEMrush)
-- Parámetros de generación
-- Configuración de GSC
-- Settings generales
+Configuración centralizada de la aplicación.
+Carga variables de entorno y define constantes globales.
+
+IMPORTANTE: Este módulo usa CLAUDE_API_KEY como nombre estándar.
+NO usar ANTHROPIC_API_KEY en ninguna parte del código.
 
 Autor: PcComponentes - Product Discovery & Content
 """
 
 import os
-from datetime import datetime
-from typing import Optional, Tuple
-import streamlit as st
+import logging
+from pathlib import Path
+from typing import Optional, Dict, Any
+from dotenv import load_dotenv
+
+# ============================================================================
+# CARGA DE VARIABLES DE ENTORNO
+# ============================================================================
+
+# Cargar .env desde la raíz del proyecto
+_project_root = Path(__file__).parent.parent
+_env_path = _project_root / ".env"
+
+if _env_path.exists():
+    load_dotenv(_env_path)
+else:
+    # Intentar cargar desde directorio actual
+    load_dotenv()
+
+# Configurar logging básico
+logging.basicConfig(
+    level=logging.INFO,
+    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
+)
+logger = logging.getLogger(__name__)
 
 
 # ============================================================================
-# FUNCIONES DE CARGA DE CONFIGURACIÓN
+# VERSIÓN DE LA APLICACIÓN
 # ============================================================================
 
-def get_secret(key: str, section: str = None, default: str = None) -> Optional[str]:
-    """
-    Obtiene un valor secreto desde diferentes fuentes.
-    
-    Prioridad:
-    1. Streamlit secrets (producción)
-    2. Variable de entorno (desarrollo)
-    3. Valor por defecto
-    
-    Args:
-        key: Nombre de la clave
-        section: Sección en secrets.toml (opcional)
-        default: Valor por defecto si no se encuentra
-        
-    Returns:
-        Valor del secreto o None/default
-    """
-    
-    # 1. Intentar desde Streamlit secrets
-    try:
-        if hasattr(st, 'secrets'):
-            if section and section in st.secrets:
-                return st.secrets[section].get(key, default)
-            elif key in st.secrets:
-                return st.secrets[key]
-    except Exception:
-        pass
-    
-    # 2. Intentar desde variable de entorno
-    env_value = os.getenv(key.upper())
-    if env_value:
-        return env_value
-    
-    # 3. Intentar cargar desde .env
-    try:
-        from dotenv import load_dotenv
-        load_dotenv()
-        env_value = os.getenv(key.upper())
-        if env_value:
-            return env_value
-    except ImportError:
-        pass
-    
-    return default
-
-
-def get_api_key() -> Optional[str]:
-    """
-    Obtiene la API key de Claude.
-    
-    Returns:
-        API key o None si no se encuentra
-    """
-    # Intentar múltiples variantes
-    key = get_secret('claude_key', 'api')
-    if key:
-        return key
-    
-    key = get_secret('ANTHROPIC_API_KEY')
-    if key:
-        return key
-    
-    key = get_secret('anthropic_api_key', 'api')
-    return key
-
-
-def get_semrush_api_key() -> Optional[str]:
-    """
-    Obtiene la API key de SEMrush.
-    
-    Returns:
-        API key o None si no se encuentra
-    """
-    key = get_secret('api_key', 'semrush')
-    if key:
-        return key
-    
-    key = get_secret('SEMRUSH_API_KEY')
-    return key
+APP_VERSION = "4.2.0"
+APP_NAME = "PcComponentes Content Generator"
+APP_AUTHOR = "Product Discovery & Content"
 
 
 # ============================================================================
-# API KEYS Y CREDENCIALES
+# API KEYS - UNIFICADO A CLAUDE_API_KEY
 # ============================================================================
 
-# Claude API
-CLAUDE_API_KEY = get_api_key()
+# IMPORTANTE: Usar CLAUDE_API_KEY en todo el código
+# Soporta ambos nombres en .env por compatibilidad, pero internamente usa CLAUDE_API_KEY
+CLAUDE_API_KEY: str = os.getenv('CLAUDE_API_KEY') or os.getenv('ANTHROPIC_API_KEY') or ''
 
-# SEMrush API
-SEMRUSH_API_KEY = get_semrush_api_key()
+# Alias para compatibilidad hacia atrás (DEPRECATED - no usar en código nuevo)
+# Este alias existe solo para evitar errores en código legacy
+ANTHROPIC_API_KEY: str = CLAUDE_API_KEY  # DEPRECATED: usar CLAUDE_API_KEY
 
+# SEMrush API Key (opcional)
+SEMRUSH_API_KEY: str = os.getenv('SEMRUSH_API_KEY', '')
 
-# ============================================================================
-# CONFIGURACIÓN DE CLAUDE
-# ============================================================================
-
-# Modelo a usar
-CLAUDE_MODEL = get_secret('CLAUDE_MODEL') or 'claude-sonnet-4-20250514'
-
-# Tokens máximos por respuesta
-MAX_TOKENS = int(get_secret('MAX_TOKENS') or '8000')
-
-# Temperature (0.0 - 1.0)
-TEMPERATURE = float(get_secret('TEMPERATURE') or '0.7')
+# Otras API keys opcionales
+GOOGLE_API_KEY: str = os.getenv('GOOGLE_API_KEY', '')
+SERP_API_KEY: str = os.getenv('SERP_API_KEY', '')
 
 
 # ============================================================================
-# CONFIGURACIÓN DE SEMRUSH
+# CONFIGURACIÓN DEL MODELO CLAUDE
 # ============================================================================
 
-# Habilitar SEMrush (True si hay API key)
-SEMRUSH_ENABLED = bool(SEMRUSH_API_KEY)
+# Modelo por defecto
+DEFAULT_MODEL: str = os.getenv('CLAUDE_MODEL', 'claude-sonnet-4-20250514')
 
-# Base de datos regional de SEMrush
-# Opciones: 'es' (España), 'us', 'uk', 'fr', 'de', 'it', 'pt', 'mx', 'ar', 'co'
-SEMRUSH_DATABASE = get_secret('database', 'semrush') or 'es'
+# Modelos disponibles
+AVAILABLE_MODELS: Dict[str, str] = {
+    'claude-sonnet-4-20250514': 'Claude Sonnet 4 (Recomendado)',
+    'claude-opus-4-20250514': 'Claude Opus 4 (Más potente)',
+    'claude-3-5-sonnet-20241022': 'Claude 3.5 Sonnet',
+    'claude-3-opus-20240229': 'Claude 3 Opus',
+    'claude-3-haiku-20240307': 'Claude 3 Haiku (Rápido)',
+}
 
-# Número de competidores a obtener por defecto
-SEMRUSH_DEFAULT_RESULTS = int(get_secret('default_results', 'semrush') or '5')
+# Límites de tokens
+MAX_TOKENS: int = int(os.getenv('MAX_TOKENS', '16000'))
+MAX_INPUT_TOKENS: int = int(os.getenv('MAX_INPUT_TOKENS', '100000'))
 
-# Máximo de competidores permitidos
-SEMRUSH_MAX_RESULTS = 10
+# Temperatura por defecto
+DEFAULT_TEMPERATURE: float = float(os.getenv('TEMPERATURE', '0.7'))
 
-# Timeout para requests de SEMrush (segundos)
-SEMRUSH_TIMEOUT = int(get_secret('timeout', 'semrush') or '30')
-
-# Delay entre requests (rate limiting)
-SEMRUSH_RATE_LIMIT_DELAY = float(get_secret('rate_limit_delay', 'semrush') or '0.5')
-
-# Dominios a excluir siempre de resultados
-SEMRUSH_EXCLUDE_DOMAINS = [
-    'pccomponentes.com',
-    'pccomponentes.pt'
-]
-
-# Scrapear contenido automáticamente
-SEMRUSH_AUTO_SCRAPE = True
+# Reintentos en caso de error
+API_MAX_RETRIES: int = int(os.getenv('API_MAX_RETRIES', '3'))
+API_RETRY_DELAY: float = float(os.getenv('API_RETRY_DELAY', '1.0'))
 
 
 # ============================================================================
-# CONFIGURACIÓN DE LA APLICACIÓN
+# CONFIGURACIÓN DE CONTENIDO
 # ============================================================================
 
-# Información de la app
-APP_TITLE = get_secret('APP_TITLE') or 'PcComponentes Content Generator'
-APP_VERSION = '4.2.0'
-PAGE_ICON = '🚀'
+# Longitud de contenido
+DEFAULT_CONTENT_LENGTH: int = int(os.getenv('DEFAULT_CONTENT_LENGTH', '1500'))
+MIN_CONTENT_LENGTH: int = 500
+MAX_CONTENT_LENGTH: int = 5000
 
-# Modo debug
-DEBUG_MODE = (get_secret('DEBUG_MODE') or 'False').lower() == 'true'
+# Tolerancia de longitud (±5%)
+WORD_COUNT_TOLERANCE: float = 0.05
 
-# Fecha de conocimiento de Claude
-CLAUDE_KNOWLEDGE_CUTOFF = datetime(2025, 1, 31)
+# Número máximo de competidores a analizar
+MAX_COMPETITORS: int = int(os.getenv('MAX_COMPETITORS', '5'))
 
-
-# ============================================================================
-# CONFIGURACIÓN DE GOOGLE SEARCH CONSOLE
-# ============================================================================
-
-# Ruta al CSV de GSC
-GSC_CSV_PATH = get_secret('GSC_CSV_PATH') or 'gsc_keywords.csv'
-
-# Habilitar verificación GSC
-GSC_VERIFICATION_ENABLED = (get_secret('GSC_VERIFICATION_ENABLED') or 'True').lower() == 'true'
-
-# Período del dataset actual (ACTUALIZAR CUANDO SE RENUEVE EL CSV)
-GSC_DATASET_START = datetime(2025, 10, 18)
-GSC_DATASET_END = datetime(2025, 11, 17)
-
-# Umbrales de alerta para freshness
-GSC_DAYS_WARNING = int(get_secret('GSC_DAYS_WARNING') or '30')
-GSC_DAYS_CRITICAL = int(get_secret('GSC_DAYS_CRITICAL') or '60')
-
-# Configuración de matching de keywords
-GSC_EXACT_MATCH_THRESHOLD = 1.0
-GSC_HIGH_SIMILARITY_THRESHOLD = float(get_secret('GSC_HIGH_SIMILARITY_THRESHOLD') or '0.85')
-GSC_MEDIUM_SIMILARITY_THRESHOLD = float(get_secret('GSC_MEDIUM_SIMILARITY_THRESHOLD') or '0.70')
-GSC_ENABLE_CONTAINS_MATCH = (get_secret('GSC_ENABLE_CONTAINS_MATCH') or 'True').lower() == 'true'
-
-# Mostrar disclaimer de freshness por defecto
-GSC_SHOW_FRESHNESS_DISCLAIMER = (get_secret('GSC_SHOW_FRESHNESS_DISCLAIMER') or 'True').lower() == 'true'
+# Límite de caracteres por competidor en análisis
+MAX_COMPETITOR_CONTENT_CHARS: int = 3000
 
 
 # ============================================================================
 # CONFIGURACIÓN DE SCRAPING
 # ============================================================================
 
-# n8n webhook para scraping de PDPs
-N8N_WEBHOOK_URL = get_secret('N8N_WEBHOOK_URL')
+# Timeout para requests HTTP
+REQUEST_TIMEOUT: int = int(os.getenv('REQUEST_TIMEOUT', '30'))
 
-# Zenrows API key (para scraping avanzado)
-ZENROWS_API_KEY = get_secret('ZENROWS_API_KEY')
+# Reintentos de scraping
+SCRAPER_MAX_RETRIES: int = int(os.getenv('SCRAPER_MAX_RETRIES', '3'))
 
-# User Agent para requests
-USER_AGENT = get_secret('USER_AGENT') or (
-    'Mozilla/5.0 (Windows NT 10.0; Win64; x64) '
-    'AppleWebKit/537.36 (KHTML, like Gecko) '
-    'Chrome/120.0.0.0 Safari/537.36'
+# User Agent
+USER_AGENT: str = os.getenv(
+    'USER_AGENT',
+    'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'
 )
 
-# Timeout para requests (segundos)
-REQUEST_TIMEOUT = int(get_secret('REQUEST_TIMEOUT') or '30')
+# Headers por defecto para requests
+DEFAULT_HEADERS: Dict[str, str] = {
+    'User-Agent': USER_AGENT,
+    'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8',
+    'Accept-Language': 'es-ES,es;q=0.9,en;q=0.8',
+    'Accept-Encoding': 'gzip, deflate, br',
+    'Connection': 'keep-alive',
+    'Upgrade-Insecure-Requests': '1',
+}
+
+# Dominios de PcComponentes
+PCCOMPONENTES_DOMAINS: list = [
+    'www.pccomponentes.com',
+    'pccomponentes.com',
+    'www.pccomponentes.pt',
+    'pccomponentes.pt',
+]
 
 
 # ============================================================================
-# CONFIGURACIÓN DE CATEGORÍAS
+# CONFIGURACIÓN DE SEMRUSH
 # ============================================================================
 
-# Ruta al CSV de categorías
-CATEGORIES_CSV_PATH = get_secret('CATEGORIES_CSV_PATH') or 'data/categories.csv'
+# Base URL de la API de SEMrush
+SEMRUSH_API_BASE_URL: str = 'https://api.semrush.com/'
 
+# Database por defecto (España)
+SEMRUSH_DEFAULT_DATABASE: str = os.getenv('SEMRUSH_DATABASE', 'es')
 
-# ============================================================================
-# CONFIGURACIÓN DE LOGGING
-# ============================================================================
-
-# Nivel de logging
-LOG_LEVEL = get_secret('LOG_LEVEL') or 'INFO'
-
-# Archivo de logs
-LOG_FILE = get_secret('LOG_FILE') or 'logs/app.log'
-
-# Habilitar logging a archivo
-ENABLE_FILE_LOGGING = (get_secret('ENABLE_FILE_LOGGING') or 'False').lower() == 'true'
+# Límite de resultados
+SEMRUSH_RESULTS_LIMIT: int = int(os.getenv('SEMRUSH_RESULTS_LIMIT', '100'))
 
 
 # ============================================================================
-# LÍMITES Y VALIDACIONES
+# CONFIGURACIÓN DE STREAMLIT
 # ============================================================================
 
-# Longitud de contenido
-MIN_CONTENT_LENGTH = 800  # Palabras mínimas
-MAX_CONTENT_LENGTH = 3000  # Palabras máximas
-DEFAULT_CONTENT_LENGTH = 1500  # Longitud por defecto
+# Título de la página
+PAGE_TITLE: str = f"{APP_NAME} v{APP_VERSION}"
 
-# Tolerancia de word count (±5%)
-WORD_COUNT_TOLERANCE = 0.05
+# Icono de la página
+PAGE_ICON: str = "🚀"
 
-# Límites de keywords
-MAX_KEYWORDS = 20
-MIN_KEYWORD_LENGTH = 3
-MAX_KEYWORD_LENGTH = 100
+# Layout por defecto
+PAGE_LAYOUT: str = "wide"
 
-# Límites de enlaces
-MAX_SECONDARY_LINKS = 10
+# Estado inicial del sidebar
+SIDEBAR_STATE: str = "expanded"
 
 
 # ============================================================================
-# CONFIGURACIÓN DE CACHÉ
+# RUTAS DE ARCHIVOS
 # ============================================================================
 
-# TTL de caché de Streamlit (segundos)
-CACHE_TTL = int(get_secret('CACHE_TTL') or '3600')
+# Directorio raíz del proyecto
+PROJECT_ROOT: Path = _project_root
 
+# Directorio de datos
+DATA_DIR: Path = PROJECT_ROOT / "data"
 
-# ============================================================================
-# CONFIGURACIÓN DE UI
-# ============================================================================
+# Directorio de assets
+ASSETS_DIR: Path = PROJECT_ROOT / "assets"
 
-# Tema de colores (PcComponentes)
-PRIMARY_COLOR = '#FF6000'  # Naranja PcComponentes
-SECONDARY_COLOR = '#170453'  # Azul oscuro
-BACKGROUND_COLOR = '#FFFFFF'
-TEXT_COLOR = '#262730'
+# Archivo de CSS del CMS
+CSS_FILE_PATH: Path = ASSETS_DIR / "cms_styles.css"
 
+# Directorio de exports
+EXPORTS_DIR: Path = PROJECT_ROOT / "exports"
 
-# ============================================================================
-# MENSAJES Y TEXTOS
-# ============================================================================
-
-# Mensaje de bienvenida
-WELCOME_MESSAGE = """
-Bienvenido al **Content Generator** de PcComponentes.
-
-Esta herramienta te ayuda a crear contenido SEO optimizado de alta calidad
-usando inteligencia artificial (Claude Sonnet 4).
-
-**Características principales:**
-- 📝 18 arquetipos de contenido predefinidos
-- 🔄 Modo reescritura con análisis competitivo (SEMrush)
-- ✅ Validación automática CMS v4.1.1
-- 🔍 Verificación de keywords en Google Search Console
-- 📊 Control preciso de longitud y estructura
-"""
-
-# Mensaje de error cuando no hay API key
-NO_API_KEY_MESSAGE = """
-⚠️ **No se encontró API Key de Claude**
-
-Para usar esta aplicación necesitas una API key de Anthropic Claude.
-
-**Configuración:**
-
-1. **Streamlit Cloud**: Settings > Secrets > añadir:
-```toml
-[api]
-claude_key = "tu-api-key"
-```
-
-2. **Local**: Crear archivo `.env` con:
-```
-ANTHROPIC_API_KEY=tu-api-key
-```
-
-Obtén tu API key en: https://console.anthropic.com/
-"""
-
-# Mensaje de SEMrush no configurado
-NO_SEMRUSH_MESSAGE = """
-💡 **SEMrush no configurado**
-
-Para obtener competidores automáticamente, configura tu API key de SEMrush:
-
-**Streamlit Cloud**: Settings > Secrets:
-```toml
-[semrush]
-api_key = "tu-api-key"
-database = "es"
-```
-
-**Local**: En archivo `.env`:
-```
-SEMRUSH_API_KEY=tu-api-key
-```
-
-Sin SEMrush, puedes introducir URLs de competidores manualmente.
-"""
+# Archivo de GSC data
+GSC_DATA_FILE: Path = DATA_DIR / "gsc_data.csv"
 
 
 # ============================================================================
-# VALIDACIÓN DE CONFIGURACIÓN
+# FUNCIONES DE VALIDACIÓN
 # ============================================================================
 
-def validate_configuration() -> bool:
+def validate_api_key() -> bool:
     """
-    Valida que la configuración esté completa.
+    Valida que la API key de Claude esté configurada.
     
     Returns:
-        True si la configuración es válida, False si falta algo crítico
+        bool: True si la API key está configurada y tiene formato válido
     """
-    
     if not CLAUDE_API_KEY:
+        logger.warning("CLAUDE_API_KEY no está configurada")
+        return False
+    
+    # Verificar formato básico (empieza con 'sk-ant-')
+    if not CLAUDE_API_KEY.startswith('sk-ant-'):
+        logger.warning("CLAUDE_API_KEY tiene formato inválido")
         return False
     
     return True
 
 
-def get_configuration_summary() -> dict:
+def validate_environment() -> tuple:
     """
-    Obtiene un resumen de la configuración actual.
+    Valida la configuración del entorno.
     
     Returns:
-        Dict con información de configuración
+        tuple: (is_valid, list_of_errors)
     """
+    errors = []
     
+    # Validar API key de Claude
+    if not CLAUDE_API_KEY:
+        errors.append("CLAUDE_API_KEY no está configurada. Añádela al archivo .env")
+    elif not CLAUDE_API_KEY.startswith('sk-ant-'):
+        errors.append("CLAUDE_API_KEY tiene formato inválido. Debe empezar con 'sk-ant-'")
+    
+    # Advertencias (no errores críticos)
+    if not SEMRUSH_API_KEY:
+        logger.info("SEMRUSH_API_KEY no configurada - funcionalidad de keywords limitada")
+    
+    # Verificar directorios
+    if not DATA_DIR.exists():
+        try:
+            DATA_DIR.mkdir(parents=True, exist_ok=True)
+            logger.info(f"Directorio de datos creado: {DATA_DIR}")
+        except Exception as e:
+            errors.append(f"No se pudo crear directorio de datos: {e}")
+    
+    if not EXPORTS_DIR.exists():
+        try:
+            EXPORTS_DIR.mkdir(parents=True, exist_ok=True)
+            logger.info(f"Directorio de exports creado: {EXPORTS_DIR}")
+        except Exception as e:
+            errors.append(f"No se pudo crear directorio de exports: {e}")
+    
+    is_valid = len(errors) == 0
+    return is_valid, errors
+
+
+def get_config_summary() -> Dict[str, Any]:
+    """
+    Retorna un resumen de la configuración actual.
+    
+    Returns:
+        dict: Resumen de configuración (sin exponer API keys completas)
+    """
     return {
         'app_version': APP_VERSION,
-        'claude_model': CLAUDE_MODEL,
+        'app_name': APP_NAME,
+        'claude_api_key_configured': bool(CLAUDE_API_KEY),
+        'claude_api_key_valid': validate_api_key(),
+        'semrush_api_key_configured': bool(SEMRUSH_API_KEY),
+        'default_model': DEFAULT_MODEL,
         'max_tokens': MAX_TOKENS,
-        'temperature': TEMPERATURE,
-        'debug_mode': DEBUG_MODE,
-        'has_claude_key': bool(CLAUDE_API_KEY),
-        'semrush_enabled': SEMRUSH_ENABLED,
-        'semrush_database': SEMRUSH_DATABASE if SEMRUSH_ENABLED else None,
-        'gsc_enabled': GSC_VERIFICATION_ENABLED,
-        'gsc_csv_exists': os.path.exists(GSC_CSV_PATH) if GSC_CSV_PATH else False,
-        'n8n_configured': bool(N8N_WEBHOOK_URL),
-        'zenrows_configured': bool(ZENROWS_API_KEY)
+        'default_temperature': DEFAULT_TEMPERATURE,
+        'default_content_length': DEFAULT_CONTENT_LENGTH,
+        'max_competitors': MAX_COMPETITORS,
+        'request_timeout': REQUEST_TIMEOUT,
+        'project_root': str(PROJECT_ROOT),
+        'data_dir_exists': DATA_DIR.exists(),
+        'exports_dir_exists': EXPORTS_DIR.exists(),
     }
 
 
-def get_gsc_dataset_info() -> dict:
+def mask_api_key(api_key: str) -> str:
     """
-    Obtiene información del dataset de GSC.
+    Enmascara una API key para mostrarla de forma segura.
+    
+    Args:
+        api_key: La API key a enmascarar
+        
+    Returns:
+        str: API key enmascarada (ej: "sk-ant-***...***xyz")
+    """
+    if not api_key:
+        return "(no configurada)"
+    
+    if len(api_key) < 12:
+        return "***"
+    
+    return f"{api_key[:7]}***...***{api_key[-3:]}"
+
+
+# ============================================================================
+# INICIALIZACIÓN
+# ============================================================================
+
+def init_settings() -> bool:
+    """
+    Inicializa y valida la configuración.
     
     Returns:
-        Dict con información del período y freshness
+        bool: True si la configuración es válida
     """
+    logger.info(f"Inicializando {APP_NAME} v{APP_VERSION}")
     
-    from datetime import timedelta
+    is_valid, errors = validate_environment()
     
-    today = datetime.now()
-    days_since_end = (today - GSC_DATASET_END).days
+    if not is_valid:
+        for error in errors:
+            logger.error(f"Error de configuración: {error}")
+        return False
     
-    return {
-        'start_date': GSC_DATASET_START,
-        'end_date': GSC_DATASET_END,
-        'days_since_end': days_since_end,
-        'is_fresh': days_since_end <= GSC_DAYS_WARNING,
-        'needs_update': days_since_end > GSC_DAYS_WARNING,
-        'is_critical': days_since_end > GSC_DAYS_CRITICAL,
-        'period_days': (GSC_DATASET_END - GSC_DATASET_START).days
-    }
-
-
-def validate_semrush_config() -> Tuple[bool, str]:
-    """
-    Valida la configuración de SEMrush.
+    logger.info("Configuración validada correctamente")
+    logger.info(f"Modelo por defecto: {DEFAULT_MODEL}")
+    logger.info(f"API Key Claude: {mask_api_key(CLAUDE_API_KEY)}")
     
-    Returns:
-        Tuple[bool, str]: (es_válida, mensaje)
-    """
-    
-    if not SEMRUSH_API_KEY:
-        return False, "API key de SEMrush no configurada"
-    
-    if SEMRUSH_DATABASE not in ['es', 'us', 'uk', 'fr', 'de', 'it', 'pt', 'mx', 'ar', 'co']:
-        return False, f"Base de datos '{SEMRUSH_DATABASE}' no válida"
-    
-    return True, "Configuración de SEMrush válida"
+    return True
 
 
 # ============================================================================
-# HELPER PARA MOSTRAR ESTADO DE CONFIGURACIÓN
-# ============================================================================
-
-def render_config_status() -> None:
-    """
-    Renderiza el estado de configuración en Streamlit.
-    Útil para debug y para mostrar al usuario qué está configurado.
-    """
-    
-    import streamlit as st
-    
-    config = get_configuration_summary()
-    
-    st.markdown("### ⚙️ Estado de Configuración")
-    
-    col1, col2 = st.columns(2)
-    
-    with col1:
-        st.markdown("**APIs:**")
-        
-        # Claude
-        if config['has_claude_key']:
-            st.success("✅ Claude API configurada")
-        else:
-            st.error("❌ Claude API no configurada")
-        
-        # SEMrush
-        if config['semrush_enabled']:
-            st.success(f"✅ SEMrush API configurada (DB: {config['semrush_database']})")
-        else:
-            st.warning("⚠️ SEMrush no configurado (modo manual)")
-    
-    with col2:
-        st.markdown("**Integraciones:**")
-        
-        # GSC
-        if config['gsc_enabled']:
-            if config['gsc_csv_exists']:
-                st.success("✅ GSC habilitado con datos")
-            else:
-                st.warning("⚠️ GSC habilitado pero sin CSV")
-        else:
-            st.info("ℹ️ GSC deshabilitado")
-        
-        # n8n
-        if config['n8n_configured']:
-            st.success("✅ n8n webhook configurado")
-        else:
-            st.info("ℹ️ n8n no configurado")
-
-
-# ============================================================================
-# SECRETS TEMPLATE (para documentación)
-# ============================================================================
-
-SECRETS_TEMPLATE = """
-# ============================================================================
-# Streamlit Secrets Template - PcComponentes Content Generator
-# ============================================================================
-
-# Claude API (REQUERIDO)
-[api]
-claude_key = "sk-ant-..."
-
-# SEMrush API (OPCIONAL - para análisis automático de competidores)
-[semrush]
-api_key = "tu-semrush-api-key"
-database = "es"  # es, us, uk, fr, de, it, pt, mx, ar, co
-default_results = 5
-timeout = 30
-
-# Configuración general
-[settings]
-debug_mode = false
-app_version = "4.2.0"
-
-# n8n (OPCIONAL - para scraping avanzado de PDPs)
-[n8n]
-webhook_url = "https://tu-n8n.com/webhook/scrape"
-
-# Zenrows (OPCIONAL - para scraping con JavaScript rendering)
-[zenrows]
-api_key = "tu-zenrows-key"
-"""
-
-
-# ============================================================================
-# TIPO HINTS PARA EXPORTACIÓN
-# ============================================================================
-
-from typing import Tuple
-
-
-# ============================================================================
-# EXPORTAR CONFIGURACIÓN
+# EXPORTS
 # ============================================================================
 
 __all__ = [
+    # Versión
+    'APP_VERSION',
+    'APP_NAME',
+    'APP_AUTHOR',
+    
     # API Keys
     'CLAUDE_API_KEY',
+    'ANTHROPIC_API_KEY',  # Alias deprecated
     'SEMRUSH_API_KEY',
+    'GOOGLE_API_KEY',
+    'SERP_API_KEY',
     
-    # Claude
-    'CLAUDE_MODEL',
+    # Modelo Claude
+    'DEFAULT_MODEL',
+    'AVAILABLE_MODELS',
     'MAX_TOKENS',
-    'TEMPERATURE',
+    'MAX_INPUT_TOKENS',
+    'DEFAULT_TEMPERATURE',
+    'API_MAX_RETRIES',
+    'API_RETRY_DELAY',
     
-    # SEMrush
-    'SEMRUSH_ENABLED',
-    'SEMRUSH_DATABASE',
-    'SEMRUSH_DEFAULT_RESULTS',
-    'SEMRUSH_MAX_RESULTS',
-    'SEMRUSH_TIMEOUT',
-    'SEMRUSH_RATE_LIMIT_DELAY',
-    'SEMRUSH_EXCLUDE_DOMAINS',
-    'SEMRUSH_AUTO_SCRAPE',
-    
-    # App
-    'APP_TITLE',
-    'APP_VERSION',
-    'PAGE_ICON',
-    'DEBUG_MODE',
-    'CLAUDE_KNOWLEDGE_CUTOFF',
-    
-    # GSC
-    'GSC_CSV_PATH',
-    'GSC_VERIFICATION_ENABLED',
-    'GSC_DATASET_START',
-    'GSC_DATASET_END',
-    'GSC_DAYS_WARNING',
-    'GSC_DAYS_CRITICAL',
-    'GSC_HIGH_SIMILARITY_THRESHOLD',
-    'GSC_MEDIUM_SIMILARITY_THRESHOLD',
-    'GSC_ENABLE_CONTAINS_MATCH',
-    'GSC_SHOW_FRESHNESS_DISCLAIMER',
-    
-    # Scraping
-    'N8N_WEBHOOK_URL',
-    'ZENROWS_API_KEY',
-    'USER_AGENT',
-    'REQUEST_TIMEOUT',
-    
-    # Categorías
-    'CATEGORIES_CSV_PATH',
-    
-    # Logging
-    'LOG_LEVEL',
-    'LOG_FILE',
-    'ENABLE_FILE_LOGGING',
-    
-    # Límites
+    # Contenido
+    'DEFAULT_CONTENT_LENGTH',
     'MIN_CONTENT_LENGTH',
     'MAX_CONTENT_LENGTH',
-    'DEFAULT_CONTENT_LENGTH',
     'WORD_COUNT_TOLERANCE',
-    'MAX_KEYWORDS',
-    'MIN_KEYWORD_LENGTH',
-    'MAX_KEYWORD_LENGTH',
-    'MAX_SECONDARY_LINKS',
+    'MAX_COMPETITORS',
+    'MAX_COMPETITOR_CONTENT_CHARS',
     
-    # Caché
-    'CACHE_TTL',
+    # Scraping
+    'REQUEST_TIMEOUT',
+    'SCRAPER_MAX_RETRIES',
+    'USER_AGENT',
+    'DEFAULT_HEADERS',
+    'PCCOMPONENTES_DOMAINS',
     
-    # UI
-    'PRIMARY_COLOR',
-    'SECONDARY_COLOR',
-    'BACKGROUND_COLOR',
-    'TEXT_COLOR',
+    # SEMrush
+    'SEMRUSH_API_BASE_URL',
+    'SEMRUSH_DEFAULT_DATABASE',
+    'SEMRUSH_RESULTS_LIMIT',
     
-    # Mensajes
-    'WELCOME_MESSAGE',
-    'NO_API_KEY_MESSAGE',
-    'NO_SEMRUSH_MESSAGE',
+    # Streamlit
+    'PAGE_TITLE',
+    'PAGE_ICON',
+    'PAGE_LAYOUT',
+    'SIDEBAR_STATE',
+    
+    # Rutas
+    'PROJECT_ROOT',
+    'DATA_DIR',
+    'ASSETS_DIR',
+    'CSS_FILE_PATH',
+    'EXPORTS_DIR',
+    'GSC_DATA_FILE',
     
     # Funciones
-    'validate_configuration',
-    'get_configuration_summary',
-    'get_gsc_dataset_info',
-    'validate_semrush_config',
-    'render_config_status',
-    'get_secret',
-    
-    # Template
-    'SECRETS_TEMPLATE'
+    'validate_api_key',
+    'validate_environment',
+    'get_config_summary',
+    'mask_api_key',
+    'init_settings',
 ]
 
-__version__ = "4.2.0"
+
+# ============================================================================
+# VALIDACIÓN AL IMPORTAR (OPCIONAL)
+# ============================================================================
+
+# Descomentar para validar automáticamente al importar
+# if not validate_api_key():
+#     logger.warning("⚠️ CLAUDE_API_KEY no configurada o inválida")
