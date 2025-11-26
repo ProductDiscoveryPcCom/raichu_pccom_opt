@@ -1,6 +1,6 @@
 """
 Settings - PcComponentes Content Generator
-Versión 4.2.0
+Versión 4.3.0
 
 Configuración centralizada de la aplicación.
 Carga variables de entorno y define constantes globales.
@@ -15,7 +15,14 @@ import os
 import logging
 from pathlib import Path
 from typing import Optional, Dict, Any
-from dotenv import load_dotenv
+
+# Intentar importar dotenv (opcional)
+try:
+    from dotenv import load_dotenv
+    _dotenv_available = True
+except ImportError:
+    _dotenv_available = False
+    load_dotenv = lambda *args, **kwargs: None
 
 # ============================================================================
 # CARGA DE VARIABLES DE ENTORNO
@@ -25,11 +32,12 @@ from dotenv import load_dotenv
 _project_root = Path(__file__).parent.parent
 _env_path = _project_root / ".env"
 
-if _env_path.exists():
-    load_dotenv(_env_path)
-else:
-    # Intentar cargar desde directorio actual
-    load_dotenv()
+if _dotenv_available:
+    if _env_path.exists():
+        load_dotenv(_env_path)
+    else:
+        # Intentar cargar desde directorio actual
+        load_dotenv()
 
 # Configurar logging básico
 logging.basicConfig(
@@ -43,9 +51,12 @@ logger = logging.getLogger(__name__)
 # VERSIÓN DE LA APLICACIÓN
 # ============================================================================
 
-APP_VERSION = "4.2.0"
+APP_VERSION = "4.3.0"
 APP_NAME = "PcComponentes Content Generator"
 APP_AUTHOR = "Product Discovery & Content"
+
+# Alias para compatibilidad con app.py
+APP_TITLE = APP_NAME
 
 
 # ============================================================================
@@ -75,6 +86,9 @@ SERP_API_KEY: str = os.getenv('SERP_API_KEY', '')
 # Modelo por defecto
 DEFAULT_MODEL: str = os.getenv('CLAUDE_MODEL', 'claude-sonnet-4-20250514')
 
+# Alias para compatibilidad con app.py
+CLAUDE_MODEL: str = DEFAULT_MODEL
+
 # Modelos disponibles
 AVAILABLE_MODELS: Dict[str, str] = {
     'claude-sonnet-4-20250514': 'Claude Sonnet 4 (Recomendado)',
@@ -91,9 +105,15 @@ MAX_INPUT_TOKENS: int = int(os.getenv('MAX_INPUT_TOKENS', '100000'))
 # Temperatura por defecto
 DEFAULT_TEMPERATURE: float = float(os.getenv('TEMPERATURE', '0.7'))
 
+# Alias para compatibilidad con app.py
+TEMPERATURE: float = DEFAULT_TEMPERATURE
+
 # Reintentos en caso de error
 API_MAX_RETRIES: int = int(os.getenv('API_MAX_RETRIES', '3'))
 API_RETRY_DELAY: float = float(os.getenv('API_RETRY_DELAY', '1.0'))
+
+# Debug mode
+DEBUG_MODE: bool = os.getenv('DEBUG_MODE', 'False').lower() in ('true', '1', 'yes')
 
 
 # ============================================================================
@@ -345,6 +365,7 @@ __all__ = [
     'APP_VERSION',
     'APP_NAME',
     'APP_AUTHOR',
+    'APP_TITLE',  # Alias de APP_NAME para compatibilidad
     
     # API Keys
     'CLAUDE_API_KEY',
@@ -355,12 +376,17 @@ __all__ = [
     
     # Modelo Claude
     'DEFAULT_MODEL',
+    'CLAUDE_MODEL',  # Alias de DEFAULT_MODEL para compatibilidad
     'AVAILABLE_MODELS',
     'MAX_TOKENS',
     'MAX_INPUT_TOKENS',
     'DEFAULT_TEMPERATURE',
+    'TEMPERATURE',  # Alias de DEFAULT_TEMPERATURE para compatibilidad
     'API_MAX_RETRIES',
     'API_RETRY_DELAY',
+    
+    # Debug
+    'DEBUG_MODE',
     
     # Contenido
     'DEFAULT_CONTENT_LENGTH',
