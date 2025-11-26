@@ -1,409 +1,1159 @@
 """
-Scraper de Productos - PcComponentes Content Generator
-Versión 4.1.1
+Web Scraper - PcComponentes Content Generator
+Versión 4.2.0
 
-Funciones para scrapear datos de productos desde PcComponentes usando n8n webhook
-y BeautifulSoup como fallback.
+Módulo de scraping para extraer contenido de páginas web.
+Incluye timeout configurable, reintentos con backoff exponencial,
+y manejo robusto de errores HTTP.
+
+Este módulo proporciona:
+- Scraping de PDPs de PcComponentes
+- Scraping de páginas de competidores
+- Extracción de contenido HTML limpio
+- Validación de URLs
+- Sistema de reintentos configurable
 
 Autor: PcComponentes - Product Discovery & Content
 """
 
-import requests
-from bs4 import BeautifulSoup
-from typing import Dict, Optional
-import json
+import re
+import time
+import logging
+from typing import Dict, List, Optional, Any, Tuple, Union
+from dataclasses import dataclass, field
+from urllib.parse import urlparse, urljoin
+from enum import Enum
 
-# Importar configuración
-from config.settings import (
-    N8N_WEBHOOK_URL,
-    USER_AGENT,
-    REQUEST_TIMEOUT
-)
+# Configurar logging
+logger = logging.getLogger(__name__)
+
+# ============================================================================
+# IMPORTS CON MANEJO DE ERRORES
+# ============================================================================
+
+try:
+    import requests
+    from requests.adapters import HTTPAdapter
+    from urllib3.util.retry import Retry
+    _requests_available = True
+except ImportError as e:
+    logger.error(f"No se pudo importar requests: {e}")
+    _requests_available = False
+
+try:
+    from bs4 import BeautifulSoup
+    _bs4_available = True
+except ImportError as e:
+    logger.warning(f"BeautifulSoup no disponible: {e}")
+    _bs4_available = False
+
+try:
+    from config.settings import (
+        REQUEST_TIMEOUT,
+        SCRAPER_MAX_RETRIES,
+        USER_AGENT,
+        DEFAULT_HEADERS,
+        PCCOMPONENTES_DOMAINS,
+    )
+except ImportError:
+    REQUEST_TIMEOUT = 30
+    SCRAPER_MAX_RETRIES = 3
+    USER_AGENT = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'
+    DEFAULT_HEADERS = {'User-Agent': USER_AGENT}
+    PCCOMPONENTES_DOMAINS = ['www.pccomponentes.com', 'pccomponentes.com']
 
 
 # ============================================================================
-# SCRAPING VÍA N8N WEBHOOK
+# VERSIÓN Y CONSTANTES
 # ============================================================================
 
-def scrape_pdp_data(url: str) -> Optional[Dict]:
+__version__ = "4.2.0"
+
+# Configuración de timeout por defecto
+DEFAULT_TIMEOUT = 30  # segundos
+MIN_TIMEOUT = 5
+MAX_TIMEOUT = 120
+
+# Configuración de reintentos
+DEFAULT_MAX_RETRIES = 3
+DEFAULT_RETRY_DELAY = 1.0
+MAX_RETRY_DELAY = 30.0
+BACKOFF_MULTIPLIER = 2.0
+
+# Códigos HTTP que permiten reintento
+RETRYABLE_STATUS_CODES = [408, 429, 500, 502, 503, 504]
+
+# Tamaño máximo de respuesta (10 MB)
+MAX_RESPONSE_SIZE = 10 * 1024 * 1024
+
+# Selectores CSS para extracción de contenido
+CONTENT_SELECTORS = [
+    'article',
+    'main',
+    '.content',
+    '.article-content',
+    '.post-content',
+    '#content',
+    '.entry-content',
+]
+
+# Elementos a eliminar del contenido
+REMOVE_SELECTORS = [
+    'script',
+    'style',
+    'nav',
+    'header',
+    'footer',
+    'aside',
+    '.sidebar',
+    '.navigation',
+    '.menu',
+    '.ads',
+    '.advertisement',
+    '.social-share',
+    '.comments',
+    '.related-posts',
+]
+
+
+# ============================================================================
+# EXCEPCIONES PERSONALIZADAS
+# ============================================================================
+
+class ScraperError(Exception):
+    """Excepción base para errores de scraping."""
+    
+    def __init__(self, message: str, url: str = "", details: Optional[Dict] = None):
+        super().__init__(message)
+        self.message = message
+        self.url = url
+        self.details = details or {}
+    
+    def __str__(self):
+        if self.url:
+            return f"{self.message} (URL: {self.url})"
+        return self.message
+
+
+class TimeoutError(ScraperError):
+    """Error de timeout en la petición."""
+    pass
+
+
+class ConnectionError(ScraperError):
+    """Error de conexión."""
+    pass
+
+
+class HTTPError(ScraperError):
+    """Error HTTP (4xx, 5xx)."""
+    
+    def __init__(
+        self,
+        message: str,
+        url: str = "",
+        status_code: int = 0,
+        details: Optional[Dict] = None
+    ):
+        super().__init__(message, url, details)
+        self.status_code = status_code
+
+
+class ContentExtractionError(ScraperError):
+    """Error al extraer contenido de la página."""
+    pass
+
+
+class URLValidationError(ScraperError):
+    """Error de validación de URL."""
+    pass
+
+
+class RetryExhaustedError(ScraperError):
+    """Error cuando se agotan los reintentos."""
+    pass
+
+
+# ============================================================================
+# ENUMS Y DATA CLASSES
+# ============================================================================
+
+class ContentType(Enum):
+    """Tipos de contenido a extraer."""
+    HTML = "html"
+    TEXT = "text"
+    JSON = "json"
+
+
+@dataclass
+class TimeoutConfig:
+    """Configuración de timeout."""
+    connect: float = 10.0  # Timeout de conexión
+    read: float = 30.0     # Timeout de lectura
+    
+    def as_tuple(self) -> Tuple[float, float]:
+        """Retorna como tupla para requests."""
+        return (self.connect, self.read)
+    
+    @classmethod
+    def from_seconds(cls, seconds: float) -> 'TimeoutConfig':
+        """Crea config desde un valor único."""
+        return cls(connect=min(seconds / 3, 10), read=seconds)
+
+
+@dataclass
+class RetryConfig:
+    """Configuración de reintentos."""
+    max_retries: int = DEFAULT_MAX_RETRIES
+    retry_delay: float = DEFAULT_RETRY_DELAY
+    backoff_multiplier: float = BACKOFF_MULTIPLIER
+    max_delay: float = MAX_RETRY_DELAY
+    retry_on_status: List[int] = field(default_factory=lambda: RETRYABLE_STATUS_CODES.copy())
+
+
+@dataclass
+class ScraperConfig:
+    """Configuración completa del scraper."""
+    timeout: TimeoutConfig = field(default_factory=TimeoutConfig)
+    retry: RetryConfig = field(default_factory=RetryConfig)
+    headers: Dict[str, str] = field(default_factory=lambda: DEFAULT_HEADERS.copy())
+    verify_ssl: bool = True
+    follow_redirects: bool = True
+    max_redirects: int = 5
+    max_response_size: int = MAX_RESPONSE_SIZE
+
+
+@dataclass
+class ScrapeResult:
+    """Resultado de una operación de scraping."""
+    success: bool
+    url: str
+    content: str = ""
+    title: str = ""
+    meta_description: str = ""
+    word_count: int = 0
+    status_code: int = 0
+    response_time: float = 0.0
+    error: Optional[str] = None
+    metadata: Optional[Dict[str, Any]] = None
+
+
+# ============================================================================
+# CLASE PRINCIPAL: WebScraper
+# ============================================================================
+
+class WebScraper:
     """
-    Scrapea datos de un producto desde su URL de PDP.
+    Scraper web con timeout configurable y reintentos.
     
-    Intenta usar n8n webhook primero, y si falla usa BeautifulSoup como fallback.
+    Características:
+    - Timeout configurable (conexión y lectura separados)
+    - Reintentos con backoff exponencial
+    - Headers personalizables
+    - Manejo robusto de errores HTTP
+    - Extracción de contenido limpio
+    - Validación de URLs
     
-    Args:
-        url: URL del producto en PcComponentes
-        
-    Returns:
-        Dict con datos del producto o None si falla
-        
     Example:
-        >>> data = scrape_pdp_data("https://www.pccomponentes.com/producto")
-        >>> print(data['name'])
-        'Nombre del producto'
-        
-    Notes:
-        - Prioridad: n8n webhook > BeautifulSoup
-        - Maneja errores gracefully
-        - Retorna None si todo falla
+        >>> scraper = WebScraper(timeout=30, max_retries=3)
+        >>> result = scraper.scrape_url("https://example.com")
+        >>> if result.success:
+        ...     print(result.content)
     """
     
-    if not url or not url.startswith('http'):
-        return None
-    
-    # Intentar con n8n webhook primero (si está configurado)
-    if N8N_WEBHOOK_URL:
-        try:
-            data = scrape_via_n8n(url)
-            if data:
-                return data
-        except Exception:
-            pass  # Fallar silenciosamente y probar fallback
-    
-    # Fallback: BeautifulSoup directo
-    try:
-        return scrape_via_beautifulsoup(url)
-    except Exception:
-        return None
-
-
-def scrape_via_n8n(url: str) -> Optional[Dict]:
-    """
-    Scrapea usando el webhook de n8n.
-    
-    Args:
-        url: URL del producto
+    def __init__(
+        self,
+        timeout: Union[int, float, TimeoutConfig] = DEFAULT_TIMEOUT,
+        max_retries: int = DEFAULT_MAX_RETRIES,
+        headers: Optional[Dict[str, str]] = None,
+        config: Optional[ScraperConfig] = None
+    ):
+        """
+        Inicializa el scraper.
         
-    Returns:
-        Dict con datos del producto o None si falla
+        Args:
+            timeout: Timeout en segundos o TimeoutConfig
+            max_retries: Número máximo de reintentos
+            headers: Headers HTTP personalizados
+            config: Configuración completa (sobrescribe otros parámetros)
+        """
+        if not _requests_available:
+            raise ImportError("El módulo 'requests' es requerido. Instálalo con: pip install requests")
         
-    Notes:
-        - Requiere N8N_WEBHOOK_URL configurado
-        - Timeout de 30 segundos
-    """
+        # Usar config si se proporciona, sino construir desde parámetros
+        if config:
+            self._config = config
+        else:
+            # Construir TimeoutConfig
+            if isinstance(timeout, TimeoutConfig):
+                timeout_config = timeout
+            else:
+                timeout = max(MIN_TIMEOUT, min(float(timeout), MAX_TIMEOUT))
+                timeout_config = TimeoutConfig.from_seconds(timeout)
+            
+            self._config = ScraperConfig(
+                timeout=timeout_config,
+                retry=RetryConfig(max_retries=max_retries),
+                headers={**DEFAULT_HEADERS, **(headers or {})}
+            )
+        
+        # Crear sesión con retry automático
+        self._session = self._create_session()
+        
+        logger.info(
+            f"WebScraper inicializado: timeout={self._config.timeout.read}s, "
+            f"max_retries={self._config.retry.max_retries}"
+        )
     
-    if not N8N_WEBHOOK_URL:
-        return None
-    
-    try:
-        response = requests.post(
-            N8N_WEBHOOK_URL,
-            json={'url': url},
-            timeout=REQUEST_TIMEOUT
+    def _create_session(self) -> requests.Session:
+        """Crea una sesión de requests con retry configurado."""
+        session = requests.Session()
+        
+        # Configurar retry adapter
+        retry_strategy = Retry(
+            total=self._config.retry.max_retries,
+            backoff_factor=self._config.retry.retry_delay,
+            status_forcelist=self._config.retry.retry_on_status,
+            allowed_methods=["GET", "HEAD", "OPTIONS"],
+            raise_on_status=False
         )
         
-        if response.status_code == 200:
-            return response.json()
+        adapter = HTTPAdapter(max_retries=retry_strategy)
+        session.mount("http://", adapter)
+        session.mount("https://", adapter)
         
-        return None
+        # Configurar headers por defecto
+        session.headers.update(self._config.headers)
+        
+        return session
     
-    except Exception:
-        return None
+    def scrape_url(
+        self,
+        url: str,
+        extract_content: bool = True,
+        timeout: Optional[float] = None
+    ) -> ScrapeResult:
+        """
+        Extrae contenido de una URL.
+        
+        Args:
+            url: URL a scrapear
+            extract_content: Si True, extrae solo el contenido principal
+            timeout: Timeout específico para esta petición (opcional)
+            
+        Returns:
+            ScrapeResult con el contenido extraído
+        """
+        start_time = time.time()
+        
+        # Validar URL
+        try:
+            validated_url = self._validate_url(url)
+        except URLValidationError as e:
+            return ScrapeResult(
+                success=False,
+                url=url,
+                error=str(e),
+                response_time=time.time() - start_time
+            )
+        
+        # Configurar timeout
+        if timeout is not None:
+            timeout = max(MIN_TIMEOUT, min(float(timeout), MAX_TIMEOUT))
+            request_timeout = TimeoutConfig.from_seconds(timeout).as_tuple()
+        else:
+            request_timeout = self._config.timeout.as_tuple()
+        
+        # Realizar petición con manejo de errores específico
+        try:
+            response = self._make_request(validated_url, request_timeout)
+            
+            # Verificar tamaño de respuesta
+            content_length = int(response.headers.get('content-length', 0))
+            if content_length > self._config.max_response_size:
+                return ScrapeResult(
+                    success=False,
+                    url=validated_url,
+                    status_code=response.status_code,
+                    error=f"Respuesta demasiado grande: {content_length} bytes",
+                    response_time=time.time() - start_time
+                )
+            
+            # Verificar código de estado
+            if not response.ok:
+                return ScrapeResult(
+                    success=False,
+                    url=validated_url,
+                    status_code=response.status_code,
+                    error=f"HTTP {response.status_code}: {response.reason}",
+                    response_time=time.time() - start_time
+                )
+            
+            # Extraer contenido
+            html_content = response.text
+            
+            if extract_content and _bs4_available:
+                extracted = self._extract_content(html_content)
+                content = extracted['content']
+                title = extracted['title']
+                meta_description = extracted['meta_description']
+            else:
+                content = html_content
+                title = ""
+                meta_description = ""
+            
+            # Contar palabras
+            word_count = len(content.split()) if content else 0
+            
+            return ScrapeResult(
+                success=True,
+                url=validated_url,
+                content=content,
+                title=title,
+                meta_description=meta_description,
+                word_count=word_count,
+                status_code=response.status_code,
+                response_time=time.time() - start_time,
+                metadata={
+                    'content_type': response.headers.get('content-type', ''),
+                    'encoding': response.encoding,
+                }
+            )
+        
+        except requests.exceptions.Timeout as e:
+            logger.warning(f"Timeout al acceder a {validated_url}: {e}")
+            return ScrapeResult(
+                success=False,
+                url=validated_url,
+                error=f"Timeout después de {request_timeout[1]}s",
+                response_time=time.time() - start_time
+            )
+        
+        except requests.exceptions.ConnectionError as e:
+            logger.warning(f"Error de conexión a {validated_url}: {e}")
+            return ScrapeResult(
+                success=False,
+                url=validated_url,
+                error=f"Error de conexión: {self._simplify_error(e)}",
+                response_time=time.time() - start_time
+            )
+        
+        except requests.exceptions.TooManyRedirects as e:
+            logger.warning(f"Demasiados redirects en {validated_url}: {e}")
+            return ScrapeResult(
+                success=False,
+                url=validated_url,
+                error="Demasiados redirects",
+                response_time=time.time() - start_time
+            )
+        
+        except requests.exceptions.RequestException as e:
+            logger.error(f"Error de request a {validated_url}: {e}")
+            return ScrapeResult(
+                success=False,
+                url=validated_url,
+                error=f"Error de petición: {self._simplify_error(e)}",
+                response_time=time.time() - start_time
+            )
+        
+        except Exception as e:
+            logger.error(f"Error inesperado scrapeando {validated_url}: {e}")
+            return ScrapeResult(
+                success=False,
+                url=validated_url,
+                error=f"Error inesperado: {type(e).__name__}",
+                response_time=time.time() - start_time
+            )
+    
+    def _make_request(
+        self,
+        url: str,
+        timeout: Tuple[float, float]
+    ) -> requests.Response:
+        """
+        Realiza la petición HTTP con reintentos manuales adicionales.
+        
+        Args:
+            url: URL a solicitar
+            timeout: Tupla (connect_timeout, read_timeout)
+            
+        Returns:
+            Response de requests
+        """
+        last_error = None
+        current_delay = self._config.retry.retry_delay
+        
+        for attempt in range(1, self._config.retry.max_retries + 1):
+            try:
+                logger.debug(f"Intento {attempt}/{self._config.retry.max_retries}: {url}")
+                
+                response = self._session.get(
+                    url,
+                    timeout=timeout,
+                    verify=self._config.verify_ssl,
+                    allow_redirects=self._config.follow_redirects,
+                )
+                
+                # Si es un error recuperable y no es el último intento
+                if response.status_code in self._config.retry.retry_on_status:
+                    if attempt < self._config.retry.max_retries:
+                        logger.warning(
+                            f"HTTP {response.status_code}, reintentando en {current_delay}s..."
+                        )
+                        time.sleep(current_delay)
+                        current_delay = min(
+                            current_delay * self._config.retry.backoff_multiplier,
+                            self._config.retry.max_delay
+                        )
+                        continue
+                
+                return response
+            
+            except (requests.exceptions.Timeout, requests.exceptions.ConnectionError) as e:
+                last_error = e
+                
+                if attempt < self._config.retry.max_retries:
+                    logger.warning(
+                        f"Error en intento {attempt}, reintentando en {current_delay}s: {e}"
+                    )
+                    time.sleep(current_delay)
+                    current_delay = min(
+                        current_delay * self._config.retry.backoff_multiplier,
+                        self._config.retry.max_delay
+                    )
+                else:
+                    raise
+        
+        # Si llegamos aquí, se agotaron los reintentos
+        if last_error:
+            raise last_error
+        
+        raise RetryExhaustedError(f"Reintentos agotados para {url}", url)
+    
+    def _validate_url(self, url: str) -> str:
+        """
+        Valida y normaliza una URL.
+        
+        Args:
+            url: URL a validar
+            
+        Returns:
+            URL normalizada
+            
+        Raises:
+            URLValidationError: Si la URL no es válida
+        """
+        if not url:
+            raise URLValidationError("URL vacía", url)
+        
+        url = url.strip()
+        
+        # Añadir protocolo si falta
+        if not url.startswith(('http://', 'https://')):
+            url = 'https://' + url
+        
+        # Parsear y validar
+        try:
+            parsed = urlparse(url)
+        except Exception as e:
+            raise URLValidationError(f"URL mal formada: {e}", url)
+        
+        if not parsed.scheme or not parsed.netloc:
+            raise URLValidationError("URL incompleta: falta esquema o dominio", url)
+        
+        if parsed.scheme not in ('http', 'https'):
+            raise URLValidationError(f"Esquema no soportado: {parsed.scheme}", url)
+        
+        return url
+    
+    def _extract_content(self, html: str) -> Dict[str, str]:
+        """
+        Extrae contenido principal de HTML.
+        
+        Args:
+            html: HTML completo de la página
+            
+        Returns:
+            Dict con 'content', 'title', 'meta_description'
+        """
+        if not _bs4_available:
+            return {'content': html, 'title': '', 'meta_description': ''}
+        
+        try:
+            soup = BeautifulSoup(html, 'html.parser')
+            
+            # Extraer título
+            title = ""
+            title_tag = soup.find('title')
+            if title_tag:
+                title = title_tag.get_text(strip=True)
+            
+            # Extraer meta description
+            meta_description = ""
+            meta_tag = soup.find('meta', attrs={'name': 'description'})
+            if meta_tag:
+                meta_description = meta_tag.get('content', '')
+            
+            # Eliminar elementos no deseados
+            for selector in REMOVE_SELECTORS:
+                for element in soup.select(selector):
+                    element.decompose()
+            
+            # Buscar contenido principal
+            content_element = None
+            for selector in CONTENT_SELECTORS:
+                content_element = soup.select_one(selector)
+                if content_element:
+                    break
+            
+            # Si no se encuentra, usar body
+            if not content_element:
+                content_element = soup.body or soup
+            
+            # Extraer texto limpio
+            content = content_element.get_text(separator=' ', strip=True)
+            
+            # Limpiar espacios múltiples
+            content = re.sub(r'\s+', ' ', content).strip()
+            
+            return {
+                'content': content,
+                'title': title,
+                'meta_description': meta_description
+            }
+        
+        except Exception as e:
+            logger.warning(f"Error extrayendo contenido: {e}")
+            return {'content': html, 'title': '', 'meta_description': ''}
+    
+    def _simplify_error(self, error: Exception) -> str:
+        """Simplifica mensaje de error para el usuario."""
+        error_str = str(error)
+        
+        # Truncar errores muy largos
+        if len(error_str) > 200:
+            error_str = error_str[:200] + "..."
+        
+        return error_str
+    
+    def set_timeout(self, timeout: Union[int, float]) -> None:
+        """
+        Actualiza el timeout del scraper.
+        
+        Args:
+            timeout: Nuevo timeout en segundos
+        """
+        timeout = max(MIN_TIMEOUT, min(float(timeout), MAX_TIMEOUT))
+        self._config.timeout = TimeoutConfig.from_seconds(timeout)
+        logger.info(f"Timeout actualizado a {timeout}s")
+    
+    def set_headers(self, headers: Dict[str, str]) -> None:
+        """
+        Actualiza headers del scraper.
+        
+        Args:
+            headers: Nuevos headers (se mezclan con existentes)
+        """
+        self._config.headers.update(headers)
+        self._session.headers.update(headers)
+    
+    def close(self) -> None:
+        """Cierra la sesión de requests."""
+        if self._session:
+            self._session.close()
+            logger.debug("Sesión de scraper cerrada")
+    
+    def __enter__(self):
+        """Context manager entry."""
+        return self
+    
+    def __exit__(self, exc_type, exc_val, exc_tb):
+        """Context manager exit."""
+        self.close()
+        return False
 
 
 # ============================================================================
-# SCRAPING VÍA BEAUTIFULSOUP (FALLBACK)
+# INSTANCIA GLOBAL DEL SCRAPER
 # ============================================================================
 
-def scrape_via_beautifulsoup(url: str) -> Optional[Dict]:
+_default_scraper: Optional[WebScraper] = None
+
+
+def get_scraper(
+    timeout: Optional[float] = None,
+    max_retries: Optional[int] = None
+) -> WebScraper:
     """
-    Scrapea usando BeautifulSoup directamente.
+    Obtiene el scraper global (singleton).
     
     Args:
-        url: URL del producto
+        timeout: Timeout personalizado (opcional)
+        max_retries: Reintentos personalizados (opcional)
         
     Returns:
-        Dict con datos del producto o None si falla
-        
-    Notes:
-        - Fallback cuando n8n no está disponible
-        - Parsea HTML directamente
-        - Puede fallar si PcComponentes cambia su estructura
+        Instancia de WebScraper
     """
+    global _default_scraper
     
+    if _default_scraper is None:
+        _default_scraper = WebScraper(
+            timeout=timeout or DEFAULT_TIMEOUT,
+            max_retries=max_retries or DEFAULT_MAX_RETRIES
+        )
+    
+    return _default_scraper
+
+
+def reset_scraper() -> None:
+    """Resetea el scraper global."""
+    global _default_scraper
+    
+    if _default_scraper:
+        _default_scraper.close()
+        _default_scraper = None
+
+
+# ============================================================================
+# FUNCIONES DE ALTO NIVEL
+# ============================================================================
+
+def scrape_url(
+    url: str,
+    timeout: Optional[float] = None,
+    extract_content: bool = True
+) -> ScrapeResult:
+    """
+    Scrapea una URL usando el scraper global.
+    
+    Args:
+        url: URL a scrapear
+        timeout: Timeout específico (opcional)
+        extract_content: Si extraer solo contenido principal
+        
+    Returns:
+        ScrapeResult con el contenido
+    """
+    scraper = get_scraper()
+    return scraper.scrape_url(url, extract_content=extract_content, timeout=timeout)
+
+
+def scrape_pdp_data(
+    url: str,
+    timeout: Optional[float] = None
+) -> Optional[Dict[str, Any]]:
+    """
+    Extrae datos de un PDP de PcComponentes.
+    
+    Args:
+        url: URL del PDP
+        timeout: Timeout específico (opcional)
+        
+    Returns:
+        Dict con datos del producto o None si hay error
+    """
+    # Validar que sea URL de PcComponentes
     try:
-        # Headers para simular navegador
-        headers = {
-            'User-Agent': USER_AGENT,
-            'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
-            'Accept-Language': 'es-ES,es;q=0.9,en;q=0.8',
-            'Accept-Encoding': 'gzip, deflate, br',
-            'Connection': 'keep-alive',
+        parsed = urlparse(url)
+        domain = parsed.netloc.lower()
+        
+        if not any(pcc in domain for pcc in PCCOMPONENTES_DOMAINS):
+            logger.warning(f"URL no es de PcComponentes: {url}")
+            return None
+    except Exception:
+        return None
+    
+    result = scrape_url(url, timeout=timeout, extract_content=True)
+    
+    if not result.success:
+        logger.warning(f"Error scrapeando PDP: {result.error}")
+        return None
+    
+    return {
+        'url': result.url,
+        'title': result.title,
+        'meta_description': result.meta_description,
+        'content': result.content,
+        'word_count': result.word_count,
+        'scraped_at': time.strftime('%Y-%m-%d %H:%M:%S'),
+        'response_time': result.response_time,
+    }
+
+
+def scrape_competitor_urls(
+    urls: List[str],
+    timeout: Optional[float] = None,
+    max_concurrent: int = 1
+) -> List[Dict[str, Any]]:
+    """
+    Scrapea múltiples URLs de competidores.
+    
+    Args:
+        urls: Lista de URLs a scrapear
+        timeout: Timeout por URL (opcional)
+        max_concurrent: Número máximo de requests concurrentes (futuro)
+        
+    Returns:
+        Lista de dicts con datos de cada competidor
+    """
+    results = []
+    scraper = get_scraper()
+    
+    for url in urls:
+        logger.info(f"Scrapeando competidor: {url}")
+        
+        result = scraper.scrape_url(url, extract_content=True, timeout=timeout)
+        
+        competitor_data = {
+            'url': url,
+            'success': result.success,
+            'title': result.title if result.success else '',
+            'content': result.content if result.success else '',
+            'word_count': result.word_count,
+            'error': result.error,
+            'response_time': result.response_time,
         }
         
-        # Request
-        response = requests.get(url, headers=headers, timeout=REQUEST_TIMEOUT)
+        results.append(competitor_data)
         
-        if response.status_code != 200:
-            return None
-        
-        # Parse HTML
-        soup = BeautifulSoup(response.text, 'html.parser')
-        
-        # Extraer datos usando selectores de PcComponentes
-        product_data = extract_product_data_from_html(soup, url)
-        
-        return product_data
+        # Pequeña pausa entre requests para no sobrecargar
+        if len(urls) > 1:
+            time.sleep(0.5)
     
-    except Exception:
-        return None
+    successful = sum(1 for r in results if r['success'])
+    logger.info(f"Scraping completado: {successful}/{len(urls)} URLs exitosas")
+    
+    return results
 
 
-def extract_product_data_from_html(soup: BeautifulSoup, url: str) -> Dict:
+def scrape_multiple_urls(
+    urls: List[str],
+    timeout: Optional[float] = None
+) -> List[ScrapeResult]:
     """
-    Extrae datos del producto desde el HTML parseado.
+    Scrapea múltiples URLs y retorna resultados.
     
     Args:
-        soup: Objeto BeautifulSoup con el HTML
-        url: URL original del producto
+        urls: Lista de URLs
+        timeout: Timeout por URL (opcional)
         
     Returns:
-        Dict con datos extraídos
-        
-    Notes:
-        - Usa selectores específicos de PcComponentes
-        - Puede necesitar actualización si cambia la estructura
-        - Retorna dict con valores por defecto si no encuentra algo
+        Lista de ScrapeResult
     """
+    scraper = get_scraper()
+    results = []
     
-    data = {
-        'url': url,
-        'name': None,
-        'price': None,
-        'original_price': None,
-        'discount': None,
-        'brand': None,
-        'model': None,
-        'sku': None,
-        'availability': None,
-        'rating': None,
-        'reviews_count': None,
-        'description': None,
-        'specifications': {},
-        'images': [],
-        'category': None
-    }
+    for url in urls:
+        result = scraper.scrape_url(url, timeout=timeout)
+        results.append(result)
+        
+        # Pausa entre requests
+        if len(urls) > 1:
+            time.sleep(0.3)
+    
+    return results
+
+
+# ============================================================================
+# FUNCIONES DE EXTRACCIÓN
+# ============================================================================
+
+def extract_product_info(html: str) -> Dict[str, Any]:
+    """
+    Extrae información de producto de HTML de PDP.
+    
+    Args:
+        html: HTML de la página de producto
+        
+    Returns:
+        Dict con información del producto
+    """
+    if not _bs4_available:
+        return {'error': 'BeautifulSoup no disponible'}
     
     try:
-        # Nombre del producto
-        name_elem = soup.select_one('h1[data-testid="product-title"]')
-        if not name_elem:
-            name_elem = soup.select_one('h1.product-title')
-        if name_elem:
-            data['name'] = name_elem.get_text(strip=True)
+        soup = BeautifulSoup(html, 'html.parser')
         
-        # Precio
-        price_elem = soup.select_one('[data-testid="product-price"]')
-        if not price_elem:
-            price_elem = soup.select_one('.precio-actual')
-        if price_elem:
-            price_text = price_elem.get_text(strip=True)
-            data['price'] = clean_price(price_text)
+        # Buscar título del producto
+        title = ""
+        for selector in ['h1', '.product-title', '.product-name', '[data-product-name]']:
+            element = soup.select_one(selector)
+            if element:
+                title = element.get_text(strip=True)
+                break
         
-        # Precio original (si hay descuento)
-        original_price_elem = soup.select_one('[data-testid="product-original-price"]')
-        if not original_price_elem:
-            original_price_elem = soup.select_one('.precio-tachado')
-        if original_price_elem:
-            original_price_text = original_price_elem.get_text(strip=True)
-            data['original_price'] = clean_price(original_price_text)
+        # Buscar precio
+        price = ""
+        for selector in ['.price', '.product-price', '[data-price]', '.current-price']:
+            element = soup.select_one(selector)
+            if element:
+                price = element.get_text(strip=True)
+                break
         
-        # Marca
-        brand_elem = soup.select_one('[data-testid="product-brand"]')
-        if not brand_elem:
-            brand_elem = soup.select_one('.marca')
-        if brand_elem:
-            data['brand'] = brand_elem.get_text(strip=True)
+        # Buscar descripción
+        description = ""
+        for selector in ['.description', '.product-description', '[data-description]']:
+            element = soup.select_one(selector)
+            if element:
+                description = element.get_text(strip=True)[:500]
+                break
         
-        # Disponibilidad
-        availability_elem = soup.select_one('[data-testid="product-availability"]')
-        if not availability_elem:
-            availability_elem = soup.select_one('.disponibilidad')
-        if availability_elem:
-            data['availability'] = availability_elem.get_text(strip=True)
-        else:
-            data['availability'] = 'Disponible'  # Default
-        
-        # Rating
-        rating_elem = soup.select_one('[data-testid="product-rating"]')
-        if rating_elem:
-            rating_text = rating_elem.get_text(strip=True)
-            data['rating'] = extract_rating(rating_text)
-        
-        # Número de reviews
-        reviews_elem = soup.select_one('[data-testid="product-reviews-count"]')
-        if reviews_elem:
-            reviews_text = reviews_elem.get_text(strip=True)
-            data['reviews_count'] = extract_number(reviews_text)
-        
-        # Descripción
-        desc_elem = soup.select_one('[data-testid="product-description"]')
-        if not desc_elem:
-            desc_elem = soup.select_one('.descripcion')
-        if desc_elem:
-            data['description'] = desc_elem.get_text(strip=True)
-        
-        # SKU
-        sku_elem = soup.select_one('[data-testid="product-sku"]')
-        if sku_elem:
-            data['sku'] = sku_elem.get_text(strip=True)
-        
-        # Imágenes
-        image_elems = soup.select('[data-testid="product-image"]')
-        if not image_elems:
-            image_elems = soup.select('.imagen-producto')
-        for img in image_elems[:5]:  # Máximo 5 imágenes
-            img_url = img.get('src') or img.get('data-src')
-            if img_url:
-                data['images'].append(img_url)
-        
-        # Especificaciones (tabla de características)
-        specs = {}
-        spec_rows = soup.select('.caracteristicas tr')
-        for row in spec_rows:
-            cells = row.find_all(['th', 'td'])
-            if len(cells) == 2:
-                key = cells[0].get_text(strip=True)
-                value = cells[1].get_text(strip=True)
-                specs[key] = value
-        
-        if specs:
-            data['specifications'] = specs
+        return {
+            'title': title,
+            'price': price,
+            'description': description,
+        }
     
+    except Exception as e:
+        logger.warning(f"Error extrayendo info de producto: {e}")
+        return {'error': str(e)}
+
+
+def extract_page_content(html: str) -> str:
+    """
+    Extrae contenido textual limpio de HTML.
+    
+    Args:
+        html: HTML de la página
+        
+    Returns:
+        Texto limpio
+    """
+    if not _bs4_available:
+        # Fallback: eliminar tags con regex
+        text = re.sub(r'<script[^>]*>.*?</script>', '', html, flags=re.DOTALL)
+        text = re.sub(r'<style[^>]*>.*?</style>', '', text, flags=re.DOTALL)
+        text = re.sub(r'<[^>]+>', ' ', text)
+        text = re.sub(r'\s+', ' ', text)
+        return text.strip()
+    
+    try:
+        soup = BeautifulSoup(html, 'html.parser')
+        
+        # Eliminar scripts y estilos
+        for tag in soup(['script', 'style', 'nav', 'header', 'footer']):
+            tag.decompose()
+        
+        # Obtener texto
+        text = soup.get_text(separator=' ', strip=True)
+        text = re.sub(r'\s+', ' ', text)
+        
+        return text.strip()
+    
+    except Exception as e:
+        logger.warning(f"Error extrayendo contenido: {e}")
+        return ""
+
+
+def extract_meta_tags(html: str) -> Dict[str, str]:
+    """
+    Extrae meta tags de HTML.
+    
+    Args:
+        html: HTML de la página
+        
+    Returns:
+        Dict con meta tags
+    """
+    if not _bs4_available:
+        return {}
+    
+    try:
+        soup = BeautifulSoup(html, 'html.parser')
+        
+        meta_tags = {}
+        
+        # Title
+        title_tag = soup.find('title')
+        if title_tag:
+            meta_tags['title'] = title_tag.get_text(strip=True)
+        
+        # Meta description
+        meta_desc = soup.find('meta', attrs={'name': 'description'})
+        if meta_desc:
+            meta_tags['description'] = meta_desc.get('content', '')
+        
+        # Meta keywords
+        meta_kw = soup.find('meta', attrs={'name': 'keywords'})
+        if meta_kw:
+            meta_tags['keywords'] = meta_kw.get('content', '')
+        
+        # Canonical
+        canonical = soup.find('link', attrs={'rel': 'canonical'})
+        if canonical:
+            meta_tags['canonical'] = canonical.get('href', '')
+        
+        # Robots
+        robots = soup.find('meta', attrs={'name': 'robots'})
+        if robots:
+            meta_tags['robots'] = robots.get('content', '')
+        
+        return meta_tags
+    
+    except Exception as e:
+        logger.warning(f"Error extrayendo meta tags: {e}")
+        return {}
+
+
+def clean_html_content(html: str, max_length: Optional[int] = None) -> str:
+    """
+    Limpia contenido HTML para análisis.
+    
+    Args:
+        html: HTML a limpiar
+        max_length: Longitud máxima del resultado (opcional)
+        
+    Returns:
+        Texto limpio
+    """
+    text = extract_page_content(html)
+    
+    if max_length and len(text) > max_length:
+        text = text[:max_length] + "..."
+    
+    return text
+
+
+def normalize_text(text: str) -> str:
+    """
+    Normaliza texto (espacios, caracteres especiales).
+    
+    Args:
+        text: Texto a normalizar
+        
+    Returns:
+        Texto normalizado
+    """
+    if not text:
+        return ""
+    
+    # Normalizar espacios
+    text = re.sub(r'\s+', ' ', text)
+    
+    # Eliminar caracteres de control
+    text = re.sub(r'[\x00-\x1f\x7f-\x9f]', '', text)
+    
+    return text.strip()
+
+
+# ============================================================================
+# FUNCIONES DE VALIDACIÓN
+# ============================================================================
+
+def validate_url(url: str) -> bool:
+    """
+    Valida que una URL sea válida.
+    
+    Args:
+        url: URL a validar
+        
+    Returns:
+        True si es válida
+    """
+    if not url:
+        return False
+    
+    try:
+        parsed = urlparse(url)
+        return bool(parsed.scheme and parsed.netloc)
     except Exception:
-        pass  # Si falla alguna extracción, continuar con lo que se tenga
+        return False
+
+
+def is_valid_pdp_url(url: str) -> bool:
+    """
+    Valida que una URL sea un PDP de PcComponentes.
     
-    return data
+    Args:
+        url: URL a validar
+        
+    Returns:
+        True si es un PDP válido
+    """
+    if not validate_url(url):
+        return False
+    
+    try:
+        parsed = urlparse(url)
+        domain = parsed.netloc.lower()
+        return any(pcc in domain for pcc in PCCOMPONENTES_DOMAINS)
+    except Exception:
+        return False
 
 
 # ============================================================================
 # UTILIDADES
 # ============================================================================
 
-def clean_price(price_text: str) -> Optional[str]:
-    """
-    Limpia y formatea un string de precio.
-    
-    Args:
-        price_text: Texto con el precio (ej: "1.299,99 €")
-        
-    Returns:
-        String con precio limpio (ej: "1299.99") o None
-        
-    Example:
-        >>> clean_price("1.299,99 €")
-        "1299.99"
-    """
-    
-    if not price_text:
-        return None
-    
-    try:
-        # Eliminar símbolo de euro y espacios
-        clean = price_text.replace('€', '').replace(' ', '').strip()
-        
-        # Reemplazar coma decimal por punto
-        clean = clean.replace(',', '.')
-        
-        # Eliminar puntos de miles
-        parts = clean.split('.')
-        if len(parts) > 2:
-            # Tiene punto de miles
-            clean = ''.join(parts[:-1]) + '.' + parts[-1]
-        
-        # Verificar que es un número válido
-        float(clean)
-        
-        return clean
-    
-    except:
-        return None
+def is_scraper_available() -> bool:
+    """Verifica si el scraper está disponible."""
+    return _requests_available
 
 
-def extract_rating(rating_text: str) -> Optional[float]:
-    """
-    Extrae rating numérico de un texto.
-    
-    Args:
-        rating_text: Texto con rating (ej: "4.5 de 5 estrellas")
-        
-    Returns:
-        Float con rating o None
-    """
-    
-    if not rating_text:
-        return None
-    
-    try:
-        import re
-        # Buscar primer número decimal
-        match = re.search(r'(\d+\.?\d*)', rating_text)
-        if match:
-            return float(match.group(1))
-    except:
-        pass
-    
-    return None
-
-
-def extract_number(text: str) -> Optional[int]:
-    """
-    Extrae un número entero de un texto.
-    
-    Args:
-        text: Texto que contiene un número
-        
-    Returns:
-        Int con el número o None
-    """
-    
-    if not text:
-        return None
-    
-    try:
-        import re
-        # Eliminar separadores de miles
-        clean = text.replace('.', '').replace(',', '')
-        # Buscar primer número
-        match = re.search(r'(\d+)', clean)
-        if match:
-            return int(match.group(1))
-    except:
-        pass
-    
-    return None
-
-
-def validate_pccomponentes_url(url: str) -> bool:
-    """
-    Valida que una URL sea de PcComponentes.
-    
-    Args:
-        url: URL a validar
-        
-    Returns:
-        bool: True si es una URL válida de PcComponentes
-    """
-    
-    if not url:
-        return False
-    
-    return 'pccomponentes.com' in url.lower()
+def get_scraper_info() -> Dict[str, Any]:
+    """Obtiene información del scraper."""
+    return {
+        'available': _requests_available,
+        'bs4_available': _bs4_available,
+        'default_timeout': DEFAULT_TIMEOUT,
+        'default_max_retries': DEFAULT_MAX_RETRIES,
+        'version': __version__,
+    }
 
 
 # ============================================================================
-# CONSTANTES Y CONFIGURACIÓN
+# EXPORTS
 # ============================================================================
 
-# Versión del módulo
-__version__ = "4.1.1"
-
-# Timeout por defecto (segundos)
-DEFAULT_TIMEOUT = 30
-
-# Headers por defecto
-DEFAULT_HEADERS = {
-    'User-Agent': USER_AGENT,
-    'Accept': 'text/html,application/xhtml+xml',
-    'Accept-Language': 'es-ES,es;q=0.9',
-}
+__all__ = [
+    # Versión
+    '__version__',
+    
+    # Excepciones
+    'ScraperError',
+    'TimeoutError',
+    'ConnectionError',
+    'HTTPError',
+    'ContentExtractionError',
+    'URLValidationError',
+    'RetryExhaustedError',
+    
+    # Clases
+    'ContentType',
+    'TimeoutConfig',
+    'RetryConfig',
+    'ScraperConfig',
+    'ScrapeResult',
+    'WebScraper',
+    
+    # Scraper global
+    'get_scraper',
+    'reset_scraper',
+    
+    # Funciones de scraping
+    'scrape_url',
+    'scrape_pdp_data',
+    'scrape_competitor_urls',
+    'scrape_multiple_urls',
+    
+    # Funciones de extracción
+    'extract_product_info',
+    'extract_page_content',
+    'extract_meta_tags',
+    'clean_html_content',
+    'normalize_text',
+    
+    # Validación
+    'validate_url',
+    'is_valid_pdp_url',
+    
+    # Utilidades
+    'is_scraper_available',
+    'get_scraper_info',
+    
+    # Constantes
+    'DEFAULT_TIMEOUT',
+    'DEFAULT_MAX_RETRIES',
+    'MIN_TIMEOUT',
+    'MAX_TIMEOUT',
+]
