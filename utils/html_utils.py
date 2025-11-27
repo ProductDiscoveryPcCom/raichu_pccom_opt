@@ -6,9 +6,74 @@ Autor: PcComponentes - Product Discovery & Content
 """
 
 import re
-from typing import Dict, List, Tuple
+from typing import Dict, List, Tuple, Optional
+from html.parser import HTMLParser as BaseHTMLParser
 
 __version__ = "4.3.0"
+
+
+# ============================================================================
+# HTML PARSER CLASS
+# ============================================================================
+
+class HTMLParser(BaseHTMLParser):
+    """Parser HTML personalizado para extracción de contenido."""
+    
+    def __init__(self):
+        super().__init__()
+        self.text_content = []
+        self.current_tag = None
+        self.headings = []
+        self.links = []
+        self.in_script = False
+        self.in_style = False
+    
+    def handle_starttag(self, tag: str, attrs: list):
+        self.current_tag = tag
+        if tag == 'script':
+            self.in_script = True
+        elif tag == 'style':
+            self.in_style = True
+        elif tag in ['h1', 'h2', 'h3', 'h4', 'h5', 'h6']:
+            self.headings.append({'level': tag, 'text': ''})
+        elif tag == 'a':
+            href = dict(attrs).get('href', '')
+            if href:
+                self.links.append({'href': href, 'text': ''})
+    
+    def handle_endtag(self, tag: str):
+        if tag == 'script':
+            self.in_script = False
+        elif tag == 'style':
+            self.in_style = False
+        self.current_tag = None
+    
+    def handle_data(self, data: str):
+        if self.in_script or self.in_style:
+            return
+        
+        text = data.strip()
+        if text:
+            self.text_content.append(text)
+            
+            if self.headings and self.current_tag in ['h1', 'h2', 'h3', 'h4', 'h5', 'h6']:
+                self.headings[-1]['text'] += text
+            
+            if self.links and self.current_tag == 'a':
+                self.links[-1]['text'] += text
+    
+    def get_text(self) -> str:
+        """Obtiene todo el texto extraído."""
+        return ' '.join(self.text_content)
+    
+    def get_headings(self) -> List[Dict]:
+        """Obtiene los headings encontrados."""
+        return self.headings
+    
+    def get_links(self) -> List[Dict]:
+        """Obtiene los enlaces encontrados."""
+        return self.links
+
 
 # ============================================================================
 # FUNCIONES DE CONTEO
@@ -215,6 +280,7 @@ def get_heading_hierarchy(html_content: str) -> List[Dict[str, str]]:
 
 __all__ = [
     '__version__',
+    'HTMLParser',
     'count_words_in_html',
     'strip_html_tags',
     'extract_content_structure',
