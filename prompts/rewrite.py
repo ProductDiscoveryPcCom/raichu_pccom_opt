@@ -1,620 +1,394 @@
 """
 Rewrite Prompts - PcComponentes Content Generator
-Versión 4.2.0
+Versión 4.3.0
 
-Prompts específicos para reescritura y mejora de contenido.
-Usa SafeTemplate para evitar conflictos con JSON y llaves.
-
-Tipos de reescritura:
-- SEO: Optimización para buscadores
-- Competitor: Basada en análisis de competidores
-- Update: Actualización de contenido existente
-- Expand: Expansión y enriquecimiento
+Prompts para reescritura de contenido basada en análisis competitivo.
+Flujo de 3 etapas:
+1. Borrador basado en análisis de competidores
+2. Análisis y correcciones
+3. Versión final
 
 Autor: PcComponentes - Product Discovery & Content
 """
 
 from typing import Dict, List, Optional, Any
-from prompts.templates import (
-    SafeTemplate,
-    build_links_section,
-    format_list_for_prompt,
-    escape_for_json,
-)
 
-# ============================================================================
-# VERSIÓN
-# ============================================================================
-
-__version__ = "4.2.0"
+__version__ = "4.3.0"
 
 
 # ============================================================================
-# TEMPLATES DE REESCRITURA SEO
+# ETAPA 1: BORRADOR CON ANÁLISIS COMPETITIVO
 # ============================================================================
 
-SEO_REWRITE_TEMPLATE = SafeTemplate("""
-Reescribe el siguiente contenido optimizándolo para SEO.
-
-KEYWORD PRINCIPAL: "$keyword"
-LONGITUD OBJETIVO: $target_length palabras
-
-CONTENIDO ORIGINAL:
----
-$original_content
----
-
-ANÁLISIS DEL CONTENIDO ACTUAL:
-- Densidad de keyword actual: $current_density
-- Estructura actual: $current_structure
-- Puntos débiles identificados: $weaknesses
-
-MEJORAS SEO REQUERIDAS:
-
-1. **OPTIMIZACIÓN DE KEYWORD**
-   - Incluir "$keyword" en el primer párrafo
-   - Densidad objetivo: 1-2% (natural, sin forzar)
-   - Usar variaciones semánticas: $keyword_variations
-
-2. **ESTRUCTURA**
-   - Mejorar jerarquía de headings (H1 > H2 > H3)
-   - Añadir tabla de contenidos si no existe
-   - Optimizar para featured snippets
-
-3. **CONTENIDO**
-   - Ampliar secciones con poco contenido
-   - Añadir datos y cifras concretas
-   - Mejorar la introducción para engagement
-
-4. **ELEMENTOS SEO**
-   - Optimizar para preguntas frecuentes (FAQs)
-   - Incluir listas cuando aporten claridad
-   - Mejorar CTAs hacia productos
-
-$links_section
-
-KEYWORDS SECUNDARIAS A POTENCIAR:
-$secondary_keywords
-
-INSTRUCCIONES ADICIONALES:
-$additional_instructions
-
-IMPORTANTE:
-- Mantén el tono de marca PcComponentes
-- No copies literalmente, reescribe con mejoras
-- El contenido debe ser más completo que el original
-""", name="seo_rewrite")
-
-
-# ============================================================================
-# TEMPLATES DE REESCRITURA CON COMPETIDORES
-# ============================================================================
-
-COMPETITOR_REWRITE_TEMPLATE = SafeTemplate("""
-Reescribe el contenido superando a la competencia analizada.
-
-KEYWORD PRINCIPAL: "$keyword"
-LONGITUD OBJETIVO: $target_length palabras
-
-CONTENIDO ACTUAL DE PCCOMPONENTES:
----
-$original_content
----
-
-ANÁLISIS DE COMPETIDORES:
-$competitor_analysis
-
-GAPS IDENTIFICADOS (lo que tienen los competidores y nosotros no):
-$content_gaps
-
-OPORTUNIDADES DE MEJORA:
-$improvement_opportunities
-
-ESTRATEGIA DE REESCRITURA:
-
-1. **SUPERAR EN PROFUNDIDAD**
-   - Cubrir todos los temas que cubren los competidores
-   - Añadir información adicional que ellos no tienen
-   - Ser más específicos y detallados
-
-2. **SUPERAR EN ESTRUCTURA**
-   - Mejor organización del contenido
-   - Navegación más clara
-   - Elementos visuales (tablas, listas, callouts)
-
-3. **SUPERAR EN VALOR**
-   - Información más actualizada
-   - Datos exclusivos si es posible
-   - Mejor experiencia de lectura
-
-4. **MANTENER DIFERENCIACIÓN**
-   - Tono de marca PcComponentes
-   - Enfoque práctico y cercano
-   - CTAs hacia nuestros productos
-
-$links_section
-
-KEYWORDS A INCLUIR (de los competidores):
-$competitor_keywords
-
-INSTRUCCIONES ADICIONALES:
-$additional_instructions
-
-RESULTADO ESPERADO:
-- Contenido que supere a todos los competidores analizados
-- Más completo, mejor estructurado, más útil
-- Optimizado para posicionar por encima de ellos
-""", name="competitor_rewrite")
-
-
-# ============================================================================
-# TEMPLATES DE ACTUALIZACIÓN
-# ============================================================================
-
-UPDATE_TEMPLATE = SafeTemplate("""
-Actualiza el siguiente contenido con información reciente.
-
-KEYWORD PRINCIPAL: "$keyword"
-FECHA DEL CONTENIDO ORIGINAL: $original_date
-
-CONTENIDO A ACTUALIZAR:
----
-$original_content
----
-
-INFORMACIÓN DESACTUALIZADA DETECTADA:
-$outdated_info
-
-ACTUALIZACIONES REQUERIDAS:
-
-1. **DATOS Y CIFRAS**
-   - Actualizar precios si se mencionan
-   - Actualizar especificaciones de productos
-   - Actualizar estadísticas del mercado
-
-2. **PRODUCTOS MENCIONADOS**
-   - Verificar disponibilidad
-   - Añadir nuevos modelos relevantes
-   - Eliminar productos descatalogados
-
-3. **INFORMACIÓN TÉCNICA**
-   - Actualizar estándares (WiFi, USB, etc.)
-   - Actualizar mejores prácticas
-   - Corregir información obsoleta
-
-4. **ESTRUCTURA Y SEO**
-   - Mejorar estructura si es necesario
-   - Actualizar FAQs con preguntas actuales
-   - Refrescar introducción y conclusión
-
-$links_section
-
-NOVEDADES A INCLUIR:
-$new_information
-
-MANTENER SIN CAMBIOS:
-$keep_unchanged
-
-INSTRUCCIONES ADICIONALES:
-$additional_instructions
-
-IMPORTANTE:
-- Indica claramente que el contenido ha sido actualizado
-- Mantén la esencia y estructura general si funcionaba
-- Asegura que toda la información sea actual y precisa
-""", name="update")
-
-
-# ============================================================================
-# TEMPLATES DE EXPANSIÓN
-# ============================================================================
-
-EXPAND_TEMPLATE = SafeTemplate("""
-Expande y enriquece el siguiente contenido.
-
-KEYWORD PRINCIPAL: "$keyword"
-LONGITUD ACTUAL: $current_length palabras
-LONGITUD OBJETIVO: $target_length palabras
-
-CONTENIDO A EXPANDIR:
----
-$original_content
----
-
-SECCIONES A AMPLIAR:
-$sections_to_expand
-
-NUEVO CONTENIDO A AÑADIR:
-$new_sections
-
-ESTRATEGIA DE EXPANSIÓN:
-
-1. **AMPLIAR SECCIONES EXISTENTES**
-   - Añadir más detalle y profundidad
-   - Incluir ejemplos prácticos
-   - Añadir datos de soporte
-
-2. **AÑADIR NUEVAS SECCIONES**
-   $new_sections_list
-
-3. **ENRIQUECER CON ELEMENTOS**
-   - Tablas comparativas donde aplique
-   - FAQs adicionales
-   - Callouts informativos
-   - Más enlaces internos
-
-4. **MEJORAR ENGAGEMENT**
-   - Introducción más gancho
-   - Transiciones más fluidas
-   - Conclusión más potente
-
-$links_section
-
-KEYWORDS ADICIONALES A INCLUIR:
-$additional_keywords
-
-INSTRUCCIONES ADICIONALES:
-$additional_instructions
-
-RESULTADO ESPERADO:
-- Contenido significativamente más completo
-- Valor añadido en cada sección
-- Mejor posicionamiento potencial
-""", name="expand")
-
-
-# ============================================================================
-# TEMPLATE DE ANÁLISIS PARA REESCRITURA
-# ============================================================================
-
-ANALYSIS_FOR_REWRITE_TEMPLATE = SafeTemplate("""
-Analiza el siguiente contenido y proporciona recomendaciones de mejora.
-
-CONTENIDO A ANALIZAR:
----
-$content
----
-
-KEYWORD PRINCIPAL: "$keyword"
-TIPO DE CONTENIDO: $content_type
-
-Proporciona un análisis estructurado en formato JSON:
-
-{
-    "seo_analysis": {
-        "keyword_density": "<porcentaje>",
-        "keyword_in_title": <true/false>,
-        "keyword_in_first_paragraph": <true/false>,
-        "heading_structure": "<descripción>",
-        "meta_optimization": "<descripción>"
-    },
-    "content_quality": {
-        "depth_score": <1-10>,
-        "originality_score": <1-10>,
-        "readability_score": <1-10>,
-        "value_score": <1-10>
-    },
-    "structure_analysis": {
-        "has_toc": <true/false>,
-        "has_faqs": <true/false>,
-        "section_count": <número>,
-        "avg_section_length": "<palabras>"
-    },
-    "improvement_priorities": [
-        {
-            "area": "<área>",
-            "priority": "<alta/media/baja>",
-            "suggestion": "<sugerencia concreta>"
-        }
-    ],
-    "competitor_gaps": [
-        "<gap 1>",
-        "<gap 2>"
-    ],
-    "rewrite_recommendation": {
-        "type": "<seo/competitor/update/expand>",
-        "effort": "<bajo/medio/alto>",
-        "expected_improvement": "<descripción>"
-    }
-}
-
-Sé específico y accionable en las recomendaciones.
-""", name="analysis_for_rewrite")
-
-
-# ============================================================================
-# FUNCIONES BUILDER
-# ============================================================================
-
-def build_seo_rewrite_prompt(
+def build_rewrite_prompt_stage1(
     keyword: str,
-    original_content: str,
+    competitor_analysis: str,
+    pdp_data: Optional[Dict] = None,
     target_length: int = 1500,
-    current_density: str = "desconocida",
-    current_structure: str = "por analizar",
-    weaknesses: str = "",
-    keyword_variations: Optional[List[str]] = None,
-    internal_links: Optional[List[str]] = None,
-    pdp_links: Optional[List[str]] = None,
-    secondary_keywords: Optional[List[str]] = None,
-    additional_instructions: str = ""
+    keywords: Optional[List[str]] = None,
+    context: str = "",
+    links: Optional[List[Dict]] = None,
+    objetivo: str = "",
+    producto_alternativo: Optional[Dict] = None,
+    arquetipo: Optional[Dict] = None,
 ) -> str:
     """
-    Construye prompt para reescritura SEO.
+    Construye el prompt para la Etapa 1: Borrador basado en análisis competitivo.
     
     Args:
         keyword: Keyword principal
-        original_content: Contenido original
+        competitor_analysis: Análisis de contenido competidor
+        pdp_data: Datos del producto
         target_length: Longitud objetivo
-        current_density: Densidad actual de keyword
-        current_structure: Estructura actual
-        weaknesses: Puntos débiles identificados
-        keyword_variations: Variaciones de la keyword
-        internal_links: Enlaces internos
-        pdp_links: Enlaces a PDPs
-        secondary_keywords: Keywords secundarias
-        additional_instructions: Instrucciones adicionales
+        keywords: Keywords secundarias
+        context: Contexto adicional
+        links: Enlaces a incluir
+        objetivo: Objetivo del contenido
+        producto_alternativo: Producto alternativo a mencionar
+        arquetipo: Arquetipo de contenido
         
     Returns:
-        Prompt de reescritura SEO
+        Prompt completo para el borrador
     """
-    variations_str = ""
-    if keyword_variations:
-        variations_str = ", ".join(f'"{v}"' for v in keyword_variations)
-    else:
-        variations_str = "(usar variaciones naturales)"
+    # Sección de producto
+    product_section = ""
+    if pdp_data:
+        product_section = f"""
+## DATOS DEL PRODUCTO PRINCIPAL
+- Nombre: {pdp_data.get('name', 'N/A')}
+- Precio: {pdp_data.get('price', 'N/A')}
+- URL: {pdp_data.get('url', 'N/A')}
+- Descripción: {pdp_data.get('description', 'N/A')[:500] if pdp_data.get('description') else 'N/A'}
+"""
     
-    return SEO_REWRITE_TEMPLATE.render(
-        keyword=keyword,
-        target_length=str(target_length),
-        original_content=_truncate_content(original_content, 6000),
-        current_density=current_density,
-        current_structure=current_structure,
-        weaknesses=weaknesses or "(Por analizar durante la reescritura)",
-        keyword_variations=variations_str,
-        links_section=build_links_section(internal_links, pdp_links),
-        secondary_keywords=format_list_for_prompt(secondary_keywords or []),
-        additional_instructions=additional_instructions or "(Ninguna)"
-    )
+    # Sección de producto alternativo
+    alt_product_section = ""
+    if producto_alternativo and producto_alternativo.get('url'):
+        alt_product_section = f"""
+## PRODUCTO ALTERNATIVO (mencionar en veredicto)
+- Nombre: {producto_alternativo.get('text', 'Alternativa')}
+- URL: {producto_alternativo.get('url', '')}
+"""
+    
+    # Sección de enlaces
+    links_section = ""
+    if links:
+        links_section = "\n## ENLACES A INCLUIR\n"
+        for link in links:
+            link_type = link.get('type', 'interno')
+            url = link.get('url', '')
+            anchor = link.get('anchor', '')
+            links_section += f"- [{anchor}]({url}) - Tipo: {link_type}\n"
+    
+    # Keywords secundarias
+    keywords_section = ""
+    if keywords:
+        keywords_section = "\n## KEYWORDS SECUNDARIAS\n"
+        for kw in keywords:
+            keywords_section += f"- {kw}\n"
+    
+    # Arquetipo
+    arquetipo_section = ""
+    if arquetipo:
+        arquetipo_section = f"""
+## ARQUETIPO DE REFERENCIA
+- Tipo: {arquetipo.get('name', 'N/A')}
+- Descripción: {arquetipo.get('description', 'N/A')}
+"""
+    
+    prompt = f"""Eres un experto redactor SEO de PcComponentes, la tienda líder de tecnología en España.
+
+# TAREA
+Genera un contenido SUPERIOR a la competencia para la keyword "{keyword}".
+
+## OBJETIVO
+{objetivo if objetivo else "Crear contenido que supere a los competidores en utilidad, profundidad y optimización SEO."}
+
+## ANÁLISIS COMPETITIVO
+{competitor_analysis[:6000] if competitor_analysis else "(Sin análisis de competidores disponible)"}
+{product_section}
+{alt_product_section}
+{links_section}
+{keywords_section}
+{arquetipo_section}
+
+## CONTEXTO ADICIONAL
+{context if context else "(Ninguno)"}
+
+## PARÁMETROS
+- **Keyword principal:** {keyword}
+- **Longitud objetivo:** {target_length} palabras
+- **Superar a competencia en:** profundidad, utilidad, estructura
+
+## INSTRUCCIONES DE ESTRUCTURA HTML
+
+```html
+<article class="contentGenerator__main">
+    <span class="kicker">TEXTO KICKER</span>
+    <h2>Título Principal con Keyword</h2>
+    
+    <nav class="toc">
+        <p class="toc__title">En este artículo</p>
+        <ol class="toc__list">
+            <li><a href="#seccion1">Sección 1</a></li>
+        </ol>
+    </nav>
+    
+    <section id="seccion1">
+        <h3>Subtítulo</h3>
+        <p>Contenido...</p>
+    </section>
+</article>
+
+<article class="contentGenerator__faqs">
+    <h2>Preguntas frecuentes</h2>
+    <div class="faqs">
+        <div class="faqs__item">
+            <h3 class="faqs__question">¿Pregunta?</h3>
+            <p class="faqs__answer">Respuesta...</p>
+        </div>
+    </div>
+</article>
+
+<article class="contentGenerator__verdict">
+    <div class="verdict-box">
+        <h2>Veredicto Final</h2>
+        <p>Conclusión...</p>
+    </div>
+</article>
+```
+
+## TONO DE MARCA PCCOMPONENTES
+- Expertos sin ser pedantes
+- Frikis sin vergüenza
+- Cercanos pero profesionales
+- Tuteamos al lector
+
+---
+
+**IMPORTANTE:** 
+- Genera SOLO el HTML, sin explicaciones
+- SUPERA a la competencia en valor y profundidad
+- Incluye información que los competidores no cubren
+"""
+    
+    return prompt
 
 
-def build_competitor_rewrite_prompt(
-    keyword: str,
-    original_content: str,
-    competitors: List[Dict[str, Any]],
+# ============================================================================
+# ETAPA 2: ANÁLISIS DE REESCRITURA
+# ============================================================================
+
+def build_rewrite_correction_prompt_stage2(
+    draft_content: str,
     target_length: int = 1500,
-    content_gaps: str = "",
-    improvement_opportunities: str = "",
-    competitor_keywords: Optional[List[str]] = None,
-    internal_links: Optional[List[str]] = None,
-    pdp_links: Optional[List[str]] = None,
-    additional_instructions: str = ""
+    keyword: str = "",
+    competitor_analysis: str = "",
+    objetivo: str = "",
 ) -> str:
     """
-    Construye prompt para reescritura basada en competidores.
+    Construye el prompt para la Etapa 2: Análisis del borrador de reescritura.
     
     Args:
-        keyword: Keyword principal
-        original_content: Contenido actual
-        competitors: Lista de datos de competidores
+        draft_content: HTML del borrador
         target_length: Longitud objetivo
-        content_gaps: Gaps de contenido identificados
-        improvement_opportunities: Oportunidades de mejora
-        competitor_keywords: Keywords de competidores
-        internal_links: Enlaces internos
-        pdp_links: Enlaces a PDPs
-        additional_instructions: Instrucciones adicionales
+        keyword: Keyword principal
+        competitor_analysis: Análisis de competidores
+        objetivo: Objetivo del contenido
         
     Returns:
-        Prompt de reescritura con análisis de competidores
+        Prompt para el análisis
     """
-    return COMPETITOR_REWRITE_TEMPLATE.render(
-        keyword=keyword,
-        target_length=str(target_length),
-        original_content=_truncate_content(original_content, 4000),
-        competitor_analysis=format_competitors_for_prompt(competitors),
-        content_gaps=content_gaps or "(Por identificar durante el análisis)",
-        improvement_opportunities=improvement_opportunities or "(Por identificar)",
-        links_section=build_links_section(internal_links, pdp_links),
-        competitor_keywords=format_list_for_prompt(competitor_keywords or []),
-        additional_instructions=additional_instructions or "(Ninguna)"
-    )
+    prompt = f"""Eres un editor SEO senior de PcComponentes. Analiza críticamente este borrador de REESCRITURA.
+
+# OBJETIVO DE LA REESCRITURA
+{objetivo if objetivo else "Superar a la competencia en todos los aspectos."}
+
+# BORRADOR A ANALIZAR
+
+```html
+{draft_content[:8000]}
+```
+
+# ANÁLISIS DE COMPETIDORES (referencia)
+
+{competitor_analysis[:3000] if competitor_analysis else "(Sin análisis disponible)"}
+
+# CRITERIOS DE EVALUACIÓN
+
+## 1. Superioridad vs Competencia
+- ¿El contenido es MEJOR que la competencia?
+- ¿Cubre gaps que los competidores no cubren?
+- ¿Es más útil y profundo?
+
+## 2. Estructura CMS
+- ¿Tiene los 3 articles obligatorios?
+- ¿Clases CSS correctas?
+- ¿Kicker con <span>?
+
+## 3. SEO
+- ¿Keyword "{keyword}" natural?
+- ¿Densidad correcta (1-2%)?
+- ¿H3 descriptivos?
+
+## 4. Contenido
+- ¿Longitud ~{target_length} palabras?
+- ¿Tono PcComponentes?
+- ¿Información única y valiosa?
+
+# FORMATO DE RESPUESTA
+
+Responde SOLO con JSON:
+
+```json
+{{
+    "word_count_actual": 0,
+    "word_count_objetivo": {target_length},
+    "supera_competencia": true,
+    "estructura_correcta": true,
+    "problemas_encontrados": [
+        {{
+            "tipo": "competencia|estructura|seo|contenido",
+            "severidad": "alta|media|baja",
+            "descripcion": "Descripción",
+            "solucion": "Solución"
+        }}
+    ],
+    "aspectos_positivos": [],
+    "gaps_cubiertos": [],
+    "puntuacion_general": 0,
+    "recomendacion_principal": ""
+}}
+```
+
+**IMPORTANTE:** Solo JSON, sin texto adicional.
+"""
+    
+    return prompt
 
 
-def build_update_prompt(
-    keyword: str,
-    original_content: str,
-    original_date: str = "desconocida",
-    outdated_info: str = "",
-    new_information: str = "",
-    keep_unchanged: str = "",
-    internal_links: Optional[List[str]] = None,
-    pdp_links: Optional[List[str]] = None,
-    additional_instructions: str = ""
+# ============================================================================
+# ETAPA 3: VERSIÓN FINAL DE REESCRITURA
+# ============================================================================
+
+def build_rewrite_final_prompt_stage3(
+    draft_content: str,
+    corrections_json: str,
+    target_length: int = 1500,
+    competitor_analysis: str = "",
 ) -> str:
     """
-    Construye prompt para actualización de contenido.
+    Construye el prompt para la Etapa 3: Versión final de reescritura.
     
     Args:
-        keyword: Keyword principal
-        original_content: Contenido a actualizar
-        original_date: Fecha del contenido original
-        outdated_info: Información desactualizada detectada
-        new_information: Nueva información a incluir
-        keep_unchanged: Elementos a mantener sin cambios
-        internal_links: Enlaces internos
-        pdp_links: Enlaces a PDPs
-        additional_instructions: Instrucciones adicionales
-        
-    Returns:
-        Prompt de actualización
-    """
-    return UPDATE_TEMPLATE.render(
-        keyword=keyword,
-        original_date=original_date,
-        original_content=_truncate_content(original_content, 6000),
-        outdated_info=outdated_info or "(Por identificar durante la revisión)",
-        new_information=new_information or "(Incluir novedades relevantes del mercado)",
-        keep_unchanged=keep_unchanged or "(Mantener estructura general si funciona)",
-        links_section=build_links_section(internal_links, pdp_links),
-        additional_instructions=additional_instructions or "(Ninguna)"
-    )
-
-
-def build_expand_prompt(
-    keyword: str,
-    original_content: str,
-    current_length: int,
-    target_length: int = 2000,
-    sections_to_expand: str = "",
-    new_sections: str = "",
-    new_sections_list: str = "",
-    additional_keywords: Optional[List[str]] = None,
-    internal_links: Optional[List[str]] = None,
-    pdp_links: Optional[List[str]] = None,
-    additional_instructions: str = ""
-) -> str:
-    """
-    Construye prompt para expansión de contenido.
-    
-    Args:
-        keyword: Keyword principal
-        original_content: Contenido a expandir
-        current_length: Longitud actual en palabras
+        draft_content: HTML del borrador
+        corrections_json: JSON con correcciones
         target_length: Longitud objetivo
-        sections_to_expand: Secciones a ampliar
-        new_sections: Nuevas secciones a añadir
-        new_sections_list: Lista de nuevas secciones
-        additional_keywords: Keywords adicionales
-        internal_links: Enlaces internos
-        pdp_links: Enlaces a PDPs
-        additional_instructions: Instrucciones adicionales
+        competitor_analysis: Análisis de competidores
         
     Returns:
-        Prompt de expansión
+        Prompt para la versión final
     """
-    return EXPAND_TEMPLATE.render(
-        keyword=keyword,
-        current_length=str(current_length),
-        target_length=str(target_length),
-        original_content=_truncate_content(original_content, 5000),
-        sections_to_expand=sections_to_expand or "(Todas las secciones cortas)",
-        new_sections=new_sections or "(Añadir FAQs, comparativas, tips adicionales)",
-        new_sections_list=new_sections_list or "- FAQs ampliadas\n- Consejos adicionales\n- Sección de errores comunes",
-        links_section=build_links_section(internal_links, pdp_links),
-        additional_keywords=format_list_for_prompt(additional_keywords or []),
-        additional_instructions=additional_instructions or "(Ninguna)"
-    )
+    prompt = f"""Eres un editor SEO senior de PcComponentes. Genera la VERSIÓN FINAL aplicando las correcciones.
 
+# BORRADOR ORIGINAL
 
-def format_competitors_for_prompt(
-    competitors: List[Dict[str, Any]],
-    max_competitors: int = 5,
-    max_content_length: int = 1500
-) -> str:
-    """
-    Formatea datos de competidores para incluir en prompt.
+```html
+{draft_content[:8000]}
+```
+
+# CORRECCIONES A APLICAR
+
+```json
+{corrections_json[:3000]}
+```
+
+# REFERENCIA COMPETITIVA
+
+{competitor_analysis[:2000] if competitor_analysis else "(Sin referencia)"}
+
+# INSTRUCCIONES
+
+1. **Aplica TODAS las correcciones**
+2. **Mantén superioridad** sobre competencia
+3. **Ajusta longitud** a ~{target_length} palabras
+4. **Verifica estructura CMS** (3 articles, clases correctas)
+
+# ESTRUCTURA REQUERIDA
+
+```html
+<article class="contentGenerator__main">
+    <span class="kicker">KICKER</span>
+    <h2>Título Principal</h2>
+    <nav class="toc">...</nav>
+    <!-- Secciones con H3 -->
+</article>
+
+<article class="contentGenerator__faqs">
+    <h2>Preguntas frecuentes</h2>
+    <div class="faqs">...</div>
+</article>
+
+<article class="contentGenerator__verdict">
+    <div class="verdict-box">
+        <h2>Veredicto Final</h2>
+        <p>...</p>
+    </div>
+</article>
+```
+
+---
+
+**IMPORTANTE:** Solo HTML final, sin explicaciones.
+"""
     
-    Args:
-        competitors: Lista de dicts con datos de competidores
-        max_competitors: Máximo de competidores a incluir
-        max_content_length: Máximo de caracteres de contenido por competidor
-        
-    Returns:
-        String formateado con análisis de competidores
-    """
+    return prompt
+
+
+# ============================================================================
+# FUNCIONES AUXILIARES
+# ============================================================================
+
+def format_competitors_for_prompt(competitors: List[Dict]) -> str:
+    """Formatea lista de competidores para incluir en prompt."""
     if not competitors:
-        return "(Sin datos de competidores disponibles)"
+        return "(Sin competidores analizados)"
     
-    sections = []
+    result = ""
+    for i, comp in enumerate(competitors, 1):
+        result += f"\n### Competidor {i}: {comp.get('title', 'Sin título')}\n"
+        result += f"- URL: {comp.get('url', 'N/A')}\n"
+        result += f"- Posición: {comp.get('position', 'N/A')}\n"
+        result += f"- Palabras: {comp.get('word_count', 'N/A')}\n"
+        if comp.get('headings'):
+            result += f"- Estructura: {', '.join(comp['headings'][:5])}\n"
     
-    for i, comp in enumerate(competitors[:max_competitors], 1):
-        url = comp.get('url', 'URL no disponible')
-        title = comp.get('title', 'Sin título')
-        word_count = comp.get('word_count', 0)
-        content = comp.get('content', '')
-        
-        # Truncar contenido
-        if len(content) > max_content_length:
-            content = content[:max_content_length] + "..."
-        
-        section = f"""
-COMPETIDOR #{i}: {url}
-Título: {title}
-Palabras: {word_count}
-
-Extracto del contenido:
-{content}
-
----"""
-        sections.append(section)
-    
-    return "\n".join(sections)
+    return result
 
 
-def analyze_content_for_rewrite(
-    content: str,
-    keyword: str,
-    content_type: str = "GC"
-) -> str:
-    """
-    Construye prompt para analizar contenido antes de reescribir.
+def analyze_content_for_rewrite(content: str, keyword: str) -> Dict:
+    """Analiza contenido para reescritura."""
+    import re
     
-    Args:
-        content: Contenido a analizar
-        keyword: Keyword principal
-        content_type: Tipo de contenido
-        
-    Returns:
-        Prompt de análisis
-    """
-    content_type_names = {
-        'GC': 'Guía de Compra',
-        'RV': 'Review/Análisis',
-        'CP': 'Comparativa',
-        'TU': 'Tutorial',
-        'TP': 'Top/Ranking',
+    # Contar palabras
+    text = re.sub(r'<[^>]+>', ' ', content)
+    words = len(text.split())
+    
+    # Buscar keyword
+    keyword_count = content.lower().count(keyword.lower())
+    density = (keyword_count / words * 100) if words > 0 else 0
+    
+    # Buscar headings
+    headings = re.findall(r'<h[1-6][^>]*>(.*?)</h[1-6]>', content, re.I | re.DOTALL)
+    
+    return {
+        'word_count': words,
+        'keyword_count': keyword_count,
+        'keyword_density': round(density, 2),
+        'headings': [re.sub(r'<[^>]+>', '', h).strip() for h in headings],
+        'has_faqs': 'faqs' in content.lower(),
+        'has_verdict': 'verdict' in content.lower(),
     }
-    
-    return ANALYSIS_FOR_REWRITE_TEMPLATE.render(
-        content=_truncate_content(content, 8000),
-        keyword=keyword,
-        content_type=content_type_names.get(content_type.upper(), content_type)
-    )
-
-
-# ============================================================================
-# FUNCIONES HELPER
-# ============================================================================
-
-def _truncate_content(content: str, max_length: int) -> str:
-    """Trunca contenido si excede longitud máxima."""
-    if not content:
-        return "(Sin contenido)"
-    
-    if len(content) <= max_length:
-        return content
-    
-    return content[:max_length] + "\n\n[... contenido truncado para el análisis ...]"
-
-
-def get_rewrite_type_description(rewrite_type: str) -> str:
-    """
-    Obtiene descripción del tipo de reescritura.
-    
-    Args:
-        rewrite_type: Tipo de reescritura (seo, competitor, update, expand)
-        
-    Returns:
-        Descripción del tipo
-    """
-    descriptions = {
-        'seo': 'Optimización SEO: Mejora el posicionamiento en buscadores',
-        'competitor': 'Análisis competitivo: Supera a la competencia',
-        'update': 'Actualización: Refresca contenido desactualizado',
-        'expand': 'Expansión: Amplía y enriquece el contenido',
-    }
-    return descriptions.get(rewrite_type.lower(), 'Tipo de reescritura no especificado')
 
 
 # ============================================================================
@@ -622,24 +396,10 @@ def get_rewrite_type_description(rewrite_type: str) -> str:
 # ============================================================================
 
 __all__ = [
-    # Versión
     '__version__',
-    
-    # Templates
-    'SEO_REWRITE_TEMPLATE',
-    'COMPETITOR_REWRITE_TEMPLATE',
-    'UPDATE_TEMPLATE',
-    'EXPAND_TEMPLATE',
-    'ANALYSIS_FOR_REWRITE_TEMPLATE',
-    
-    # Builders
-    'build_seo_rewrite_prompt',
-    'build_competitor_rewrite_prompt',
-    'build_update_prompt',
-    'build_expand_prompt',
-    
-    # Utilidades
+    'build_rewrite_prompt_stage1',
+    'build_rewrite_correction_prompt_stage2',
+    'build_rewrite_final_prompt_stage3',
     'format_competitors_for_prompt',
     'analyze_content_for_rewrite',
-    'get_rewrite_type_description',
 ]
