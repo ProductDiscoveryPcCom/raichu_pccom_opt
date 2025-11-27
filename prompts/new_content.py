@@ -207,6 +207,7 @@ def build_new_content_correction_prompt_stage2(
 - ¿Usa las clases CSS correctas?
 - ¿El kicker es un <span>, no un <div>?
 - ¿El título principal es H2?
+- ¿Sólo se utilizan los emojis soportados ⚡✅?
 
 ## 2. SEO
 - ¿La keyword "{keyword}" aparece de forma natural?
