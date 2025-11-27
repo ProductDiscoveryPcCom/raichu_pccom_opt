@@ -6,11 +6,39 @@ Autor: PcComponentes - Product Discovery & Content
 """
 
 import re
-from typing import Dict, List, Tuple, Optional
+from typing import Dict, List, Tuple, Optional, Any
 from html.parser import HTMLParser as BaseHTMLParser
+from dataclasses import dataclass, field
 
 __version__ = "4.3.0"
 
+# ============================================================================
+# VERIFICAR BEAUTIFULSOUP
+# ============================================================================
+
+try:
+    from bs4 import BeautifulSoup
+    _bs4_available = True
+except ImportError:
+    _bs4_available = False
+
+def is_bs4_available() -> bool:
+    """Verifica si BeautifulSoup está disponible."""
+    return _bs4_available
+
+# ============================================================================
+# DATA CLASSES
+# ============================================================================
+
+@dataclass
+class ExtractedContent:
+    """Contenido extraído de HTML."""
+    text: str = ""
+    title: str = ""
+    headings: List[Dict[str, str]] = field(default_factory=list)
+    links: List[Dict[str, str]] = field(default_factory=list)
+    word_count: int = 0
+    meta: Dict[str, str] = field(default_factory=dict)
 
 # ============================================================================
 # HTML PARSER CLASS
@@ -51,29 +79,38 @@ class HTMLParser(BaseHTMLParser):
     def handle_data(self, data: str):
         if self.in_script or self.in_style:
             return
-        
         text = data.strip()
         if text:
             self.text_content.append(text)
-            
             if self.headings and self.current_tag in ['h1', 'h2', 'h3', 'h4', 'h5', 'h6']:
                 self.headings[-1]['text'] += text
-            
             if self.links and self.current_tag == 'a':
                 self.links[-1]['text'] += text
     
     def get_text(self) -> str:
-        """Obtiene todo el texto extraído."""
         return ' '.join(self.text_content)
     
     def get_headings(self) -> List[Dict]:
-        """Obtiene los headings encontrados."""
         return self.headings
     
     def get_links(self) -> List[Dict]:
-        """Obtiene los enlaces encontrados."""
         return self.links
 
+# ============================================================================
+# FUNCIONES DE PARSER
+# ============================================================================
+
+def get_html_parser() -> HTMLParser:
+    """Retorna una nueva instancia del HTMLParser."""
+    return HTMLParser()
+
+def get_parser():
+    """Retorna el parser de BeautifulSoup o 'html.parser'."""
+    return 'html.parser'
+
+def get_bs4_parser():
+    """Alias para get_parser."""
+    return get_parser()
 
 # ============================================================================
 # FUNCIONES DE CONTEO
@@ -89,6 +126,9 @@ def count_words_in_html(html_content: str) -> int:
     text = re.sub(r'\s+', ' ', text).strip()
     return len(text.split()) if text else 0
 
+def get_word_count(html_content: str) -> int:
+    """Alias para count_words_in_html."""
+    return count_words_in_html(html_content)
 
 def strip_html_tags(html_content: str) -> str:
     """Elimina tags HTML dejando solo texto."""
@@ -97,6 +137,9 @@ def strip_html_tags(html_content: str) -> str:
     text = re.sub(r'<[^>]+>', ' ', html_content)
     return re.sub(r'\s+', ' ', text).strip()
 
+def strip_tags(html_content: str) -> str:
+    """Alias para strip_html_tags."""
+    return strip_html_tags(html_content)
 
 # ============================================================================
 # FUNCIONES DE EXTRACCIÓN
@@ -133,6 +176,69 @@ def extract_content_structure(html_content: str) -> Dict:
     except Exception as e:
         return {'error': str(e), 'structure_valid': False}
 
+def extract_content(html_content: str) -> ExtractedContent:
+    """Extrae contenido estructurado de HTML."""
+    result = ExtractedContent()
+    
+    if not html_content:
+        return result
+    
+    result.text = strip_html_tags(html_content)
+    result.word_count = count_words_in_html(html_content)
+    
+    # Título
+    title_match = re.search(r'<title[^>]*>(.*?)</title>', html_content, re.I | re.DOTALL)
+    result.title = strip_html_tags(title_match.group(1)) if title_match else ""
+    
+    # Headings
+    for level, text in re.findall(r'<(h[1-6])[^>]*>(.*?)</\1>', html_content, re.I | re.DOTALL):
+        result.headings.append({'level': level.lower(), 'text': strip_html_tags(text)})
+    
+    # Links
+    for match in re.findall(r'<a[^>]+href=["\']([^"\']+)["\'][^>]*>(.*?)</a>', html_content, re.I | re.DOTALL):
+        result.links.append({'href': match[0], 'text': strip_html_tags(match[1])})
+    
+    return result
+
+def extract_text(html_content: str) -> str:
+    """Extrae solo el texto de HTML."""
+    return strip_html_tags(html_content)
+
+def extract_meta_tags(html_content: str) -> Dict[str, str]:
+    """Extrae meta tags de HTML."""
+    meta = {}
+    if not html_content:
+        return meta
+    
+    for match in re.findall(r'<meta[^>]+>', html_content, re.I):
+        name_match = re.search(r'name=["\']([^"\']+)["\']', match, re.I)
+        property_match = re.search(r'property=["\']([^"\']+)["\']', match, re.I)
+        content_match = re.search(r'content=["\']([^"\']+)["\']', match, re.I)
+        
+        key = (name_match or property_match)
+        if key and content_match:
+            meta[key.group(1)] = content_match.group(1)
+    
+    return meta
+
+# ============================================================================
+# FUNCIONES DE LIMPIEZA
+# ============================================================================
+
+def sanitize_html(html_content: str) -> str:
+    """Sanitiza HTML eliminando scripts y styles."""
+    if not html_content:
+        return ""
+    
+    html = re.sub(r'<script[^>]*>.*?</script>', '', html_content, flags=re.DOTALL | re.I)
+    html = re.sub(r'<style[^>]*>.*?</style>', '', html, flags=re.DOTALL | re.I)
+    html = re.sub(r'<!--.*?-->', '', html, flags=re.DOTALL)
+    
+    return html.strip()
+
+def clean_html(html_content: str) -> str:
+    """Alias para sanitize_html."""
+    return sanitize_html(html_content)
 
 # ============================================================================
 # FUNCIONES DE VALIDACIÓN
@@ -152,14 +258,8 @@ def validate_html_structure(html_content: str) -> Dict[str, bool]:
         'no_markdown': not any(md in html_content for md in ['```', '**', '## '])
     }
 
-
 def validate_cms_structure(html_content: str) -> Tuple[bool, List[str], List[str]]:
-    """
-    Valida que el HTML cumpla con requisitos del CMS.
-    
-    Returns:
-        Tuple[bool, List[str], List[str]]: (is_valid, errors, warnings)
-    """
+    """Valida que el HTML cumpla con requisitos del CMS."""
     errors = []
     warnings = []
     
@@ -168,26 +268,22 @@ def validate_cms_structure(html_content: str) -> Tuple[bool, List[str], List[str
     
     html_lower = html_content.lower()
     
-    # Validar artículos
     article_count = html_lower.count('<article')
     if article_count < 3:
         errors.append(f"❌ Se encontraron {article_count} tags <article>, deben ser mínimo 3")
     elif article_count > 3:
         warnings.append(f"⚠️ Se encontraron {article_count} tags <article>, lo normal son 3")
     
-    # Validar kicker
     has_div_kicker = '<div class="kicker">' in html_lower
     has_span_kicker = '<span class="kicker">' in html_lower
     if has_div_kicker and not has_span_kicker:
         errors.append("❌ El kicker usa <div> pero debe usar <span>")
     
-    # Validar H1 vs H2
     if '<h1' in html_lower:
         errors.append("❌ Se encontró <h1> pero el CMS usa H2 como título principal")
     if '<h2' not in html_lower:
         warnings.append("⚠️ No se encontró ningún <h2> para el título principal")
     
-    # Validar secciones
     if 'contentgenerator__main' not in html_lower and 'content-generator' not in html_lower:
         warnings.append("⚠️ No se encontró article principal")
     if 'faq' not in html_lower:
@@ -195,19 +291,16 @@ def validate_cms_structure(html_content: str) -> Tuple[bool, List[str], List[str
     if 'verdict' not in html_lower:
         warnings.append("⚠️ No se encontró sección de veredicto")
     
-    # Validar contenido
     word_count = count_words_in_html(html_content)
     if word_count < 300:
         errors.append(f"❌ Solo {word_count} palabras. Mínimo: 500")
     elif word_count < 500:
         warnings.append(f"⚠️ {word_count} palabras. Recomendado: 800+")
     
-    # Markdown residual
     if any(md in html_content for md in ['```', '**', '## ']):
         warnings.append("⚠️ Se detectó posible Markdown residual")
     
     return len(errors) == 0, errors, warnings
-
 
 def validate_word_count_target(html_content: str, target: int, tolerance: float = 0.05) -> Dict:
     """Valida si el word count está dentro del rango objetivo."""
@@ -226,7 +319,6 @@ def validate_word_count_target(html_content: str, target: int, tolerance: float 
         'difference': diff,
         'percentage_diff': round(pct, 2)
     }
-
 
 # ============================================================================
 # FUNCIONES DE ANÁLISIS DE ENLACES
@@ -262,7 +354,6 @@ def analyze_links(html_content: str) -> Dict:
         'external_count': len(external)
     }
 
-
 def get_heading_hierarchy(html_content: str) -> List[Dict[str, str]]:
     """Extrae jerarquía de encabezados."""
     if not html_content:
@@ -273,31 +364,38 @@ def get_heading_hierarchy(html_content: str) -> List[Dict[str, str]]:
         for level, text in re.findall(r'<(h[1-6])[^>]*>(.*?)</\1>', html_content, re.I | re.DOTALL)
     ]
 
-
-def get_html_parser() -> HTMLParser:
-    """
-    Retorna una nueva instancia del HTMLParser.
-    
-    Returns:
-        HTMLParser: Nueva instancia del parser
-    """
-    return HTMLParser()
-
-
 # ============================================================================
 # EXPORTS
 # ============================================================================
 
 __all__ = [
     '__version__',
+    # Parser
     'HTMLParser',
     'get_html_parser',
+    'get_parser',
+    'get_bs4_parser',
+    'is_bs4_available',
+    # Data classes
+    'ExtractedContent',
+    # Conteo
     'count_words_in_html',
+    'get_word_count',
     'strip_html_tags',
+    'strip_tags',
+    # Extracción
     'extract_content_structure',
+    'extract_content',
+    'extract_text',
+    'extract_meta_tags',
+    # Limpieza
+    'sanitize_html',
+    'clean_html',
+    # Validación
     'validate_html_structure',
     'validate_cms_structure',
     'validate_word_count_target',
+    # Enlaces
     'analyze_links',
     'get_heading_hierarchy',
 ]
