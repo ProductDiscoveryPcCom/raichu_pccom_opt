@@ -1,4 +1,4 @@
-""""""
+"""
 Configuración - PcComponentes Content Generator
 Versión 4.3.0
 
