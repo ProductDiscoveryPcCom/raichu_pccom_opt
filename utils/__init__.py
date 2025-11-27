@@ -13,6 +13,7 @@ __version__ = "4.3.0"
 try:
     from .html_utils import (
         HTMLParser,
+        get_html_parser,
         count_words_in_html,
         extract_content_structure,
         validate_html_structure,
@@ -29,6 +30,7 @@ except ImportError as e:
     
     # Fallbacks
     from html.parser import HTMLParser
+    def get_html_parser(): return HTMLParser()
     def count_words_in_html(html): return 0
     def extract_content_structure(html): return {}
     def validate_html_structure(html): return {}
@@ -82,6 +84,7 @@ __all__ = [
     '__version__',
     # HTML utils
     'HTMLParser',
+    'get_html_parser',
     'count_words_in_html',
     'extract_content_structure',
     'validate_html_structure',
