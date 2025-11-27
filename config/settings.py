@@ -1,4 +1,4 @@
-"""
+""""""
 Configuración - PcComponentes Content Generator
 Versión 4.3.0
 
@@ -26,7 +26,8 @@ TEMPERATURE: float = float(os.getenv('TEMPERATURE', '0.7'))
 # ============================================================================
 # APP SETTINGS
 # ============================================================================
-APP_TITLE: str = "PcComponentes Content Generator"
+APP_NAME: str = "PcComponentes Content Generator"
+APP_TITLE: str = APP_NAME  # Alias
 APP_VERSION: str = "4.3.0"
 PAGE_ICON: str = "🚀"
 DEBUG_MODE: bool = os.getenv('DEBUG_MODE', 'false').lower() == 'true'
@@ -138,6 +139,7 @@ __all__ = [
     'MAX_TOKENS',
     'TEMPERATURE',
     # App
+    'APP_NAME',
     'APP_TITLE',
     'APP_VERSION',
     'PAGE_ICON',
