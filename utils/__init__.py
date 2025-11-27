@@ -12,6 +12,7 @@ __version__ = "4.3.0"
 # Importar html_utils
 try:
     from .html_utils import (
+        HTMLParser,
         count_words_in_html,
         extract_content_structure,
         validate_html_structure,
@@ -26,6 +27,8 @@ except ImportError as e:
     logger.warning(f"No se pudo importar html_utils: {e}")
     _html_utils_available = False
     
+    # Fallbacks
+    from html.parser import HTMLParser
     def count_words_in_html(html): return 0
     def extract_content_structure(html): return {}
     def validate_html_structure(html): return {}
@@ -78,6 +81,7 @@ except ImportError:
 __all__ = [
     '__version__',
     # HTML utils
+    'HTMLParser',
     'count_words_in_html',
     'extract_content_structure',
     'validate_html_structure',
