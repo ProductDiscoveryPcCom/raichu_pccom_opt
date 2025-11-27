@@ -274,6 +274,16 @@ def get_heading_hierarchy(html_content: str) -> List[Dict[str, str]]:
     ]
 
 
+def get_html_parser() -> HTMLParser:
+    """
+    Retorna una nueva instancia del HTMLParser.
+    
+    Returns:
+        HTMLParser: Nueva instancia del parser
+    """
+    return HTMLParser()
+
+
 # ============================================================================
 # EXPORTS
 # ============================================================================
@@ -281,6 +291,7 @@ def get_heading_hierarchy(html_content: str) -> List[Dict[str, str]]:
 __all__ = [
     '__version__',
     'HTMLParser',
+    'get_html_parser',
     'count_words_in_html',
     'strip_html_tags',
     'extract_content_structure',
