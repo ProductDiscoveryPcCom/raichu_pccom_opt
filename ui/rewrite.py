@@ -1,11 +1,13 @@
+# -*- coding: utf-8 -*-
 """
 UI de Reescritura - PcComponentes Content Generator
-Versión 4.2.0
+Versión 4.5.0
 
 Este módulo maneja la interfaz de usuario para el modo REESCRITURA,
 que analiza contenido competidor y genera una versión mejorada.
 
 Incluye:
+- Campo para pegar HTML del artículo a reescribir
 - Integración con SEMrush API para datos reales de competidores
 - Fallback a entrada manual si SEMrush no está disponible
 - Verificación GSC para evitar canibalización
@@ -13,10 +15,11 @@ Incluye:
 Flujo:
 1. Input de keyword principal
 2. Verificación GSC (opcional)
-3. Obtención de competidores (SEMrush API o manual)
-4. Análisis competitivo de contenido
-5. Configuración de parámetros adicionales
-6. Generación del contenido mejorado en 3 etapas
+3. Contenido HTML a reescribir (NUEVO)
+4. Obtención de competidores (SEMrush API o manual)
+5. Análisis competitivo de contenido
+6. Configuración de parámetros adicionales
+7. Generación del contenido mejorado en 3 etapas
 
 Autor: PcComponentes - Product Discovery & Content
 """
@@ -25,6 +28,7 @@ import streamlit as st
 from typing import Dict, List, Optional, Tuple
 import json
 from datetime import datetime
+import re
 
 # Importar utilidades
 from utils.html_utils import count_words_in_html
@@ -58,6 +62,17 @@ except ImportError:
 
 
 # ============================================================================
+# VERSIÓN Y CONSTANTES
+# ============================================================================
+
+__version__ = "4.5.0"
+
+MAX_COMPETITORS = 10
+DEFAULT_REWRITE_LENGTH = 1600
+COMPETITION_BEAT_FACTOR = 1.2
+
+
+# ============================================================================
 # FUNCIÓN PRINCIPAL DE RENDERIZADO
 # ============================================================================
 
@@ -68,6 +83,7 @@ def render_rewrite_section() -> Tuple[bool, Dict]:
     Esta función gestiona toda la interfaz del modo reescritura, incluyendo:
     - Input de keyword y configuración
     - Verificación GSC
+    - Campo HTML para pegar contenido a reescribir
     - Obtención de competidores (SEMrush o manual)
     - Análisis competitivo
     - Configuración de parámetros de generación
@@ -90,20 +106,22 @@ def render_rewrite_section() -> Tuple[bool, Dict]:
         **✅ SEMrush API Conectada**
         
         1. 🔍 Verifica si ya rankeas para esta keyword (GSC)
-        2. 📊 Obtiene los **top 5 resultados reales** de Google vía SEMrush
-        3. 🔍 Scrapea y analiza el contenido de cada competidor
-        4. 📈 Identifica **gaps de contenido** y oportunidades
-        5. ✍️ Genera contenido **superior** que cubre todos los gaps
+        2. 📄 Opcionalmente, pega el HTML del artículo a mejorar
+        3. 📊 Obtiene los **top 5 resultados reales** de Google vía SEMrush
+        4. 🔍 Scrapea y analiza el contenido de cada competidor
+        5. 📈 Identifica **gaps de contenido** y oportunidades
+        6. ✍️ Genera contenido **superior** que cubre todos los gaps
         """)
     else:
         st.info("""
         **📝 Modo Manual** (SEMrush no configurado)
         
         1. 🔍 Verifica si ya rankeas para esta keyword (GSC)
-        2. ✏️ Introduce manualmente las URLs de competidores a analizar
-        3. 🔍 Scrapea y analiza el contenido de cada URL
-        4. 📈 Identifica **gaps de contenido** y oportunidades
-        5. ✍️ Genera contenido **superior** que cubre todos los gaps
+        2. 📄 Opcionalmente, pega el HTML del artículo a mejorar
+        3. ✏️ Introduce manualmente las URLs de competidores a analizar
+        4. 🔍 Scrapea y analiza el contenido de cada URL
+        5. 📈 Identifica **gaps de contenido** y oportunidades
+        6. ✍️ Genera contenido **superior** que cubre todos los gaps
         
         💡 **Tip**: Configura SEMrush API en Settings para obtener competidores automáticamente.
         """)
@@ -111,7 +129,9 @@ def render_rewrite_section() -> Tuple[bool, Dict]:
     # Inicializar estado si no existe
     _initialize_rewrite_state()
     
-    # Paso 1: Keyword y verificación GSC
+    # =========================================================================
+    # PASO 1: Keyword y verificación GSC
+    # =========================================================================
     st.markdown("---")
     st.markdown("### 🎯 Paso 1: Keyword Principal")
     
@@ -137,9 +157,19 @@ def render_rewrite_section() -> Tuple[bool, Dict]:
                 mejorar el contenido existente.
                 """)
     
-    # Paso 2: Obtener competidores
+    # =========================================================================
+    # PASO 2: Contenido HTML a reescribir (NUEVO)
+    # =========================================================================
     st.markdown("---")
-    st.markdown("### 🏆 Paso 2: Análisis de Competidores")
+    st.markdown("### 📄 Paso 2: Contenido a Reescribir (Opcional)")
+    
+    html_to_rewrite = render_html_content_input()
+    
+    # =========================================================================
+    # PASO 3: Obtener competidores
+    # =========================================================================
+    st.markdown("---")
+    st.markdown("### 🏆 Paso 3: Análisis de Competidores")
     
     if semrush_available:
         # Modo SEMrush automático
@@ -153,9 +183,11 @@ def render_rewrite_section() -> Tuple[bool, Dict]:
     if st.session_state.rewrite_competitors_data:
         render_competitors_summary(st.session_state.rewrite_competitors_data)
     
-    # Paso 3: Configuración de parámetros
+    # =========================================================================
+    # PASO 4: Configuración de parámetros
+    # =========================================================================
     st.markdown("---")
-    st.markdown("### ⚙️ Paso 3: Configuración del Contenido")
+    st.markdown("### ⚙️ Paso 4: Configuración del Contenido")
     
     rewrite_config = render_rewrite_configuration(keyword)
     
@@ -164,7 +196,8 @@ def render_rewrite_section() -> Tuple[bool, Dict]:
         keyword,
         st.session_state.rewrite_competitors_data,
         rewrite_config,
-        gsc_analysis
+        gsc_analysis,
+        html_to_rewrite
     )
     
     # Botón de generación
@@ -175,7 +208,7 @@ def render_rewrite_section() -> Tuple[bool, Dict]:
         return False, {}
     
     # Mostrar resumen antes de generar
-    render_generation_summary(keyword, rewrite_config, gsc_analysis)
+    render_generation_summary(keyword, rewrite_config, gsc_analysis, html_to_rewrite)
     
     # Botón grande de generación
     col1, col2, col3 = st.columns([1, 2, 1])
@@ -192,7 +225,8 @@ def render_rewrite_section() -> Tuple[bool, Dict]:
             keyword=keyword,
             competitors_data=st.session_state.rewrite_competitors_data,
             rewrite_config=rewrite_config,
-            gsc_analysis=gsc_analysis
+            gsc_analysis=gsc_analysis,
+            html_to_rewrite=html_to_rewrite
         )
         return True, full_config
     
@@ -218,6 +252,108 @@ def _initialize_rewrite_state() -> None:
         st.session_state.manual_urls_input = ''
     if 'semrush_response' not in st.session_state:
         st.session_state.semrush_response = None
+    if 'html_to_rewrite' not in st.session_state:
+        st.session_state.html_to_rewrite = ''
+
+
+# ============================================================================
+# INPUT DE CONTENIDO HTML A REESCRIBIR (NUEVO)
+# ============================================================================
+
+def render_html_content_input() -> str:
+    """
+    Renderiza el campo para pegar HTML del artículo a reescribir.
+    
+    Returns:
+        str: Contenido HTML pegado por el usuario (puede estar vacío)
+    """
+    
+    st.markdown("""
+    Si tienes un artículo existente que quieres mejorar, pega aquí su código HTML.
+    Esto ayudará a mantener la estructura y mejorar el contenido existente.
+    """)
+    
+    # Checkbox para mostrar/ocultar el campo
+    use_existing = st.checkbox(
+        "Tengo un artículo existente para reescribir",
+        value=bool(st.session_state.get('html_to_rewrite', '')),
+        help="Activa esta opción si quieres mejorar un artículo existente"
+    )
+    
+    html_content = ""
+    
+    if use_existing:
+        html_content = st.text_area(
+            "Código HTML del artículo original",
+            value=st.session_state.get('html_to_rewrite', ''),
+            height=200,
+            key="html_rewrite_input",
+            placeholder="""<article>
+  <h1>Título del artículo existente...</h1>
+  <p>Contenido del primer párrafo...</p>
+  <h2>Subtítulo...</h2>
+  <p>Más contenido...</p>
+</article>""",
+            help="Pega el código HTML completo del artículo que quieres mejorar"
+        )
+        
+        # Guardar en session state
+        st.session_state.html_to_rewrite = html_content
+        
+        # Mostrar estadísticas si hay contenido
+        if html_content and html_content.strip():
+            # Extraer texto para contar palabras
+            text_content = _strip_html_tags(html_content)
+            word_count = len(text_content.split())
+            char_count = len(html_content)
+            
+            col1, col2, col3 = st.columns(3)
+            with col1:
+                st.metric("📝 Palabras", f"{word_count:,}")
+            with col2:
+                st.metric("📊 Caracteres", f"{char_count:,}")
+            with col3:
+                # Detectar estructura básica
+                h1_count = html_content.lower().count('<h1')
+                h2_count = html_content.lower().count('<h2')
+                st.metric("📑 Encabezados", f"{h1_count} H1, {h2_count} H2")
+            
+            # Advertencia si el contenido es muy corto
+            if word_count < 100:
+                st.warning("⚠️ El contenido parece muy corto. Asegúrate de haber pegado el artículo completo.")
+            elif word_count > 50:
+                st.success(f"✅ Contenido detectado: {word_count} palabras")
+        
+        # Tips
+        with st.expander("💡 Tips para pegar el HTML"):
+            st.markdown("""
+            **¿De dónde obtener el HTML?**
+            
+            1. **Desde el CMS**: Usa la vista "HTML" o "Código fuente" del editor
+            2. **Desde el navegador**: Click derecho > "Ver código fuente" > Copiar sección del artículo
+            3. **Desde DevTools**: F12 > Elements > Copiar el `<article>` o `<main>`
+            
+            **¿Qué incluir?**
+            - ✅ El contenido del artículo (títulos, párrafos, listas)
+            - ✅ Enlaces internos existentes
+            - ❌ No incluyas header/footer del sitio
+            - ❌ No incluyas scripts o estilos
+            """)
+    else:
+        # Limpiar si se desactiva
+        st.session_state.html_to_rewrite = ''
+        st.caption("💡 Si no tienes contenido existente, generaremos uno nuevo desde cero basado en el análisis competitivo.")
+    
+    return html_content
+
+
+def _strip_html_tags(html: str) -> str:
+    """Elimina tags HTML y retorna texto plano."""
+    # Eliminar tags
+    text = re.sub(r'<[^>]+>', ' ', html)
+    # Limpiar espacios múltiples
+    text = re.sub(r'\s+', ' ', text)
+    return text.strip()
 
 
 # ============================================================================
@@ -488,7 +624,6 @@ def _scrape_single_url(url: str, position: int) -> Dict:
     """
     import requests
     from bs4 import BeautifulSoup
-    import re
     
     headers = {
         'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
@@ -783,7 +918,8 @@ def validate_rewrite_inputs(
     keyword: str,
     competitors_data: Optional[List[Dict]],
     config: Dict,
-    gsc_analysis: Optional[Dict]
+    gsc_analysis: Optional[Dict],
+    html_to_rewrite: str = ""
 ) -> bool:
     """
     Valida que todos los inputs necesarios estén completos.
@@ -793,6 +929,7 @@ def validate_rewrite_inputs(
         competitors_data: Datos de competidores
         config: Configuración del usuario
         gsc_analysis: Análisis de GSC (opcional)
+        html_to_rewrite: HTML del artículo a reescribir (opcional)
         
     Returns:
         bool: True si todos los inputs necesarios están completos
@@ -804,14 +941,17 @@ def validate_rewrite_inputs(
     if not keyword or len(keyword.strip()) < 3:
         missing.append("Keyword principal")
     
-    # Validar que haya competidores analizados
-    if not competitors_data or len(competitors_data) == 0:
-        missing.append("Análisis de competidores (busca o introduce URLs)")
-    else:
+    # Validar que haya competidores analizados O contenido a reescribir
+    has_competitors = competitors_data and len(competitors_data) > 0
+    has_html = html_to_rewrite and len(html_to_rewrite.strip()) > 100
+    
+    if not has_competitors and not has_html:
+        missing.append("Análisis de competidores O contenido HTML a reescribir")
+    elif has_competitors:
         # Verificar que al menos uno tenga contenido
         has_content = any(c.get('scrape_success', False) for c in competitors_data)
-        if not has_content:
-            missing.append("Al menos un competidor con contenido scrapeado")
+        if not has_content and not has_html:
+            missing.append("Al menos un competidor con contenido scrapeado O HTML a reescribir")
     
     # Validar objetivo
     if not config.get('objetivo') or len(config['objetivo'].strip()) < 10:
@@ -821,9 +961,15 @@ def validate_rewrite_inputs(
     if not config.get('target_length') or config['target_length'] < 800:
         missing.append("Longitud objetivo válida (mínimo 800 palabras)")
     
-    # Si falta algo, mostrar
+    # Si falta algo, mostrar en formato compacto
     if missing:
-        st.warning(f"⚠️ **Faltan campos obligatorios:**\n\n" + "\n".join([f"- {m}" for m in missing]))
+        error_html = "<div style='background-color:#fff3cd;border:1px solid #ffc107;border-radius:5px;padding:10px;margin:10px 0;'>"
+        error_html += "<span style='color:#856404;font-weight:bold;font-size:14px;'>⚠️ Campos pendientes:</span>"
+        error_html += "<ul style='margin:5px 0;padding-left:20px;color:#856404;font-size:13px;'>"
+        for m in missing:
+            error_html += f"<li>{m}</li>"
+        error_html += "</ul></div>"
+        st.markdown(error_html, unsafe_allow_html=True)
         return False
     
     # Warning de GSC (no bloquea, solo advierte)
@@ -841,7 +987,12 @@ def validate_rewrite_inputs(
 # RESUMEN ANTES DE GENERAR
 # ============================================================================
 
-def render_generation_summary(keyword: str, config: Dict, gsc_analysis: Optional[Dict]) -> None:
+def render_generation_summary(
+    keyword: str, 
+    config: Dict, 
+    gsc_analysis: Optional[Dict],
+    html_to_rewrite: str = ""
+) -> None:
     """
     Muestra un resumen de la configuración antes de generar.
     
@@ -849,6 +1000,7 @@ def render_generation_summary(keyword: str, config: Dict, gsc_analysis: Optional
         keyword: Keyword principal
         config: Configuración del usuario
         gsc_analysis: Análisis de GSC (opcional)
+        html_to_rewrite: HTML del artículo a reescribir
     """
     
     st.markdown("### 📋 Resumen de Generación")
@@ -861,6 +1013,11 @@ def render_generation_summary(keyword: str, config: Dict, gsc_analysis: Optional
             st.markdown(f"- 🎯 Keyword: `{keyword}`")
             st.markdown(f"- 📝 Longitud: `{config['target_length']:,}` palabras")
             st.markdown(f"- 🔑 Keywords adicionales: `{len(config.get('keywords', [])) - 1}`")
+            
+            # Indicar si hay HTML a reescribir
+            if html_to_rewrite and len(html_to_rewrite.strip()) > 100:
+                word_count = len(_strip_html_tags(html_to_rewrite).split())
+                st.markdown(f"- 📄 HTML original: `{word_count}` palabras")
         
         with col2:
             st.markdown("**Análisis competitivo:**")
@@ -876,6 +1033,8 @@ def render_generation_summary(keyword: str, config: Dict, gsc_analysis: Optional
                     diff = config['target_length'] - avg_words
                     pct = (diff / avg_words * 100) if avg_words > 0 else 0
                     st.markdown(f"- 📈 Nuestro diferencial: `{pct:+.0f}%`")
+            elif html_to_rewrite:
+                st.markdown("- 📄 Modo: **Mejora de contenido existente**")
             
             # Info de GSC si existe
             if gsc_analysis and gsc_analysis.get('has_matches'):
@@ -898,7 +1057,8 @@ def prepare_rewrite_config(
     keyword: str,
     competitors_data: List[Dict],
     rewrite_config: Dict,
-    gsc_analysis: Optional[Dict]
+    gsc_analysis: Optional[Dict],
+    html_to_rewrite: str = ""
 ) -> Dict:
     """
     Prepara la configuración completa para el proceso de generación.
@@ -908,6 +1068,7 @@ def prepare_rewrite_config(
         competitors_data: Datos de competidores
         rewrite_config: Configuración del usuario
         gsc_analysis: Análisis de GSC (opcional)
+        html_to_rewrite: HTML del artículo a reescribir
         
     Returns:
         Dict con toda la configuración necesaria para generar
@@ -922,6 +1083,9 @@ def prepare_rewrite_config(
         'keywords': rewrite_config.get('keywords', [keyword]),
         'context': rewrite_config.get('context', ''),
     }
+    
+    # HTML a reescribir (NUEVO)
+    config['html_to_rewrite'] = html_to_rewrite if html_to_rewrite else None
     
     # Enlaces
     config['links'] = {
@@ -939,9 +1103,12 @@ def prepare_rewrite_config(
     }
     
     # Datos de competidores (solo los scrapeados con éxito)
-    config['competitors_data'] = [
-        c for c in competitors_data if c.get('scrape_success', False)
-    ]
+    if competitors_data:
+        config['competitors_data'] = [
+            c for c in competitors_data if c.get('scrape_success', False)
+        ]
+    else:
+        config['competitors_data'] = []
     
     # Análisis de GSC
     config['gsc_analysis'] = gsc_analysis
@@ -979,12 +1146,16 @@ def render_rewrite_help() -> None:
         - Verifica si ya rankeas para la keyword
         - Detecta riesgo de canibalización
         
-        **2. Análisis Competitivo:**
+        **2. Contenido a Reescribir (Nuevo):**
+        - Opcionalmente, pega el HTML de un artículo existente
+        - El sistema lo usará como base para mejorar
+        
+        **3. Análisis Competitivo:**
         - **Con SEMrush**: Obtiene automáticamente top 5 URLs de Google
         - **Manual**: Introduces las URLs que quieres analizar
         - Scrapea y analiza el contenido de cada competidor
         
-        **3. Generación Mejorada:**
+        **4. Generación Mejorada:**
         - Crea contenido que cubre TODOS los gaps identificados
         - Profundiza más que la competencia
         - Aporta valor único de PcComponentes
@@ -1005,17 +1176,22 @@ def render_rewrite_help() -> None:
 
 
 # ============================================================================
-# CONSTANTES Y CONFIGURACIÓN
+# EXPORTS
 # ============================================================================
 
-# Versión del módulo
-__version__ = "4.2.0"
-
-# Número máximo de competidores a analizar
-MAX_COMPETITORS = 10
-
-# Longitud por defecto sugerida
-DEFAULT_REWRITE_LENGTH = 1600
-
-# Factor de superación vs competencia
-COMPETITION_BEAT_FACTOR = 1.2  # 20% más que el promedio
+__all__ = [
+    '__version__',
+    'render_rewrite_section',
+    'render_keyword_input',
+    'render_html_content_input',
+    'render_manual_competitors_input',
+    'render_competitors_summary',
+    'render_rewrite_configuration',
+    'validate_rewrite_inputs',
+    'render_generation_summary',
+    'prepare_rewrite_config',
+    'render_rewrite_help',
+    'MAX_COMPETITORS',
+    'DEFAULT_REWRITE_LENGTH',
+    'COMPETITION_BEAT_FACTOR',
+]
