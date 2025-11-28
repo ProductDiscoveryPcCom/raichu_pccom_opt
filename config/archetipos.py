@@ -1,4 +1,5 @@
-""""""
+# -*- coding: utf-8 -*-
+"""
 Arquetipos de Contenido - PcComponentes Content Generator
 Versión 4.4.0
 
@@ -933,6 +934,10 @@ def get_arquetipo_codes() -> List[str]:
     return list(ARQUETIPOS.keys())
 
 
+# Alias para compatibilidad con versiones anteriores
+get_all_codes = get_arquetipo_codes
+
+
 def get_guiding_questions(code: str) -> List[str]:
     """Obtiene las preguntas guía de un arquetipo."""
     arq = ARQUETIPOS.get(code)
@@ -1022,6 +1027,7 @@ __all__ = [
     "list_arquetipos",
     "get_arquetipo_names",
     "get_arquetipo_codes",
+    "get_all_codes",  # Alias para compatibilidad
     "get_guiding_questions",
     "get_arquetipo_description",
     "get_default_length",
