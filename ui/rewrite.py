@@ -838,24 +838,66 @@ def render_rewrite_configuration(keyword: str) -> Dict:
         height=100
     )
     
-    # Enlaces
+    # Enlaces - Múltiples
     st.markdown("#### 🔗 Enlaces a Incluir")
     
-    col_link1, col_link2 = st.columns(2)
+    # Inicializar lista de enlaces en session_state si no existe
+    if 'rewrite_links' not in st.session_state:
+        st.session_state.rewrite_links = [{'url': '', 'text': ''}]
     
-    with col_link1:
-        config['link_principal_url'] = st.text_input(
-            "URL del enlace principal",
-            placeholder="https://www.pccomponentes.com/categoria",
-            help="Enlace principal a incluir en primeros párrafos"
-        )
+    # Mostrar cada enlace
+    links_to_remove = []
     
-    with col_link2:
-        config['link_principal_text'] = st.text_input(
-            "Texto anchor del enlace",
-            placeholder="Ej: portátiles gaming",
-            help="Texto del enlace (debe ser natural y descriptivo)"
-        )
+    for i, link in enumerate(st.session_state.rewrite_links):
+        col_url, col_text, col_remove = st.columns([5, 4, 1])
+        
+        with col_url:
+            new_url = st.text_input(
+                f"URL del enlace {i+1}",
+                value=link.get('url', ''),
+                placeholder="https://www.pccomponentes.com/categoria",
+                key=f"rewrite_link_url_{i}",
+                help="URL del enlace a incluir"
+            )
+            st.session_state.rewrite_links[i]['url'] = new_url
+        
+        with col_text:
+            new_text = st.text_input(
+                f"Texto anchor {i+1}",
+                value=link.get('text', ''),
+                placeholder="Ej: portátiles gaming",
+                key=f"rewrite_link_text_{i}",
+                help="Texto del enlace (natural y descriptivo)"
+            )
+            st.session_state.rewrite_links[i]['text'] = new_text
+        
+        with col_remove:
+            st.markdown("<br>", unsafe_allow_html=True)  # Espaciado
+            if len(st.session_state.rewrite_links) > 1:
+                if st.button("🗑️", key=f"remove_rewrite_link_{i}", help="Eliminar enlace"):
+                    links_to_remove.append(i)
+    
+    # Eliminar enlaces marcados
+    for idx in sorted(links_to_remove, reverse=True):
+        st.session_state.rewrite_links.pop(idx)
+        st.rerun()
+    
+    # Botón para añadir más enlaces
+    col_add, col_info = st.columns([1, 3])
+    with col_add:
+        if st.button("➕ Añadir enlace", key="add_rewrite_link"):
+            st.session_state.rewrite_links.append({'url': '', 'text': ''})
+            st.rerun()
+    
+    with col_info:
+        st.caption(f"📊 {len(st.session_state.rewrite_links)} enlace(s) configurado(s)")
+    
+    # Guardar enlaces válidos en config
+    config['enlaces'] = [
+        {'url': link['url'], 'text': link['text']}
+        for link in st.session_state.rewrite_links
+        if link.get('url', '').strip()
+    ]
     
     # Producto alternativo (opcional)
     st.markdown("#### 🎯 Producto Alternativo (opcional)")
@@ -1087,14 +1129,20 @@ def prepare_rewrite_config(
     # HTML a reescribir (NUEVO)
     config['html_to_rewrite'] = html_to_rewrite if html_to_rewrite else None
     
-    # Enlaces
-    config['links'] = {
-        'principal': {
-            'url': rewrite_config.get('link_principal_url', ''),
-            'text': rewrite_config.get('link_principal_text', '')
-        },
-        'secundarios': []
-    }
+    # Enlaces - Ahora es una lista de múltiples enlaces
+    enlaces_list = rewrite_config.get('enlaces', [])
+    
+    # Convertir a formato compatible con prompts/rewrite.py
+    config['links'] = [
+        {
+            'url': enlace.get('url', ''),
+            'text': enlace.get('text', ''),
+            'anchor': enlace.get('text', ''),  # Alias para compatibilidad
+            'type': 'interno'
+        }
+        for enlace in enlaces_list
+        if enlace.get('url', '').strip()
+    ]
     
     # Producto alternativo
     config['producto_alternativo'] = {
