@@ -42,22 +42,78 @@ APP_TITLE = "PcComponentes Content Generator"
 # IMPORTS CON MANEJO DE ERRORES
 # ============================================================================
 
-# Configuración
-try:
-    from config.settings import (
-        CLAUDE_API_KEY,
-        CLAUDE_MODEL,
-        MAX_TOKENS,
-        TEMPERATURE,
-        DEBUG_MODE,
-    )
-except ImportError:
+# Configuración - Primero st.secrets (Streamlit Cloud), luego config.settings, luego env vars
+def _load_config():
+    """Carga la configuración desde múltiples fuentes."""
+    config = {
+        'api_key': '',
+        'model': 'claude-sonnet-4-20250514',
+        'max_tokens': 8000,
+        'temperature': 0.7,
+        'debug_mode': False,
+    }
+    
+    # 1. Intentar cargar desde st.secrets (Streamlit Cloud)
+    try:
+        # Nombres según tu archivo secrets.toml
+        config['api_key'] = st.secrets.get('claude_key', '')
+        config['model'] = st.secrets.get('claude_model', config['model'])
+        config['max_tokens'] = st.secrets.get('max_tokens', config['max_tokens'])
+        config['temperature'] = st.secrets.get('temperature', config['temperature'])
+        
+        # Debug mode está en [settings]
+        if 'settings' in st.secrets:
+            config['debug_mode'] = st.secrets.settings.get('debug_mode', False)
+        
+        if config['api_key']:
+            logger.info("Configuración cargada desde st.secrets")
+            return config
+    except Exception as e:
+        logger.debug(f"No se pudo cargar de st.secrets: {e}")
+    
+    # 2. Intentar cargar desde config.settings
+    try:
+        from config.settings import (
+            CLAUDE_API_KEY,
+            CLAUDE_MODEL,
+            MAX_TOKENS,
+            TEMPERATURE,
+            DEBUG_MODE,
+        )
+        config['api_key'] = CLAUDE_API_KEY
+        config['model'] = CLAUDE_MODEL
+        config['max_tokens'] = MAX_TOKENS
+        config['temperature'] = TEMPERATURE
+        config['debug_mode'] = DEBUG_MODE
+        
+        if config['api_key']:
+            logger.info("Configuración cargada desde config.settings")
+            return config
+    except ImportError:
+        logger.debug("config.settings no disponible")
+    
+    # 3. Fallback a variables de entorno
     import os
-    CLAUDE_API_KEY = os.getenv('CLAUDE_API_KEY', os.getenv('ANTHROPIC_API_KEY', ''))
-    CLAUDE_MODEL = 'claude-sonnet-4-20250514'
-    MAX_TOKENS = 16000
-    TEMPERATURE = 0.7
-    DEBUG_MODE = os.getenv('DEBUG_MODE', 'false').lower() == 'true'
+    config['api_key'] = os.getenv('CLAUDE_API_KEY', os.getenv('ANTHROPIC_API_KEY', ''))
+    config['model'] = os.getenv('CLAUDE_MODEL', config['model'])
+    config['max_tokens'] = int(os.getenv('MAX_TOKENS', config['max_tokens']))
+    config['temperature'] = float(os.getenv('TEMPERATURE', config['temperature']))
+    config['debug_mode'] = os.getenv('DEBUG_MODE', 'false').lower() == 'true'
+    
+    if config['api_key']:
+        logger.info("Configuración cargada desde variables de entorno")
+    else:
+        logger.warning("No se encontró API key en ninguna fuente")
+    
+    return config
+
+# Cargar configuración
+_config = _load_config()
+CLAUDE_API_KEY = _config['api_key']
+CLAUDE_MODEL = _config['model']
+MAX_TOKENS = _config['max_tokens']
+TEMPERATURE = _config['temperature']
+DEBUG_MODE = _config['debug_mode']
 
 # Arquetipos
 try:
@@ -174,15 +230,29 @@ def check_configuration() -> Tuple[bool, List[str]]:
     errors = []
     
     if not CLAUDE_API_KEY:
-        errors.append("CLAUDE_API_KEY no está configurada")
+        errors.append(
+            "API Key no configurada. Verifica que en tu secrets.toml tengas: "
+            "claude_key = \"sk-ant-...\""
+        )
     elif not CLAUDE_API_KEY.startswith('sk-ant-'):
-        errors.append("CLAUDE_API_KEY tiene formato inválido (debe empezar con 'sk-ant-')")
+        errors.append(
+            f"API Key tiene formato inválido (debe empezar con 'sk-ant-'). "
+            f"Valor actual empieza con: '{CLAUDE_API_KEY[:10]}...'"
+        )
     
     if not _generator_available:
-        errors.append("ContentGenerator no está disponible")
+        errors.append("ContentGenerator no está disponible - verifica core/generator.py")
     
     if not _new_content_available:
         errors.append("Módulo prompts.new_content no está disponible")
+    
+    # Log para debug
+    if errors:
+        logger.error(f"Errores de configuración: {errors}")
+        logger.debug(f"CLAUDE_API_KEY presente: {bool(CLAUDE_API_KEY)}")
+        logger.debug(f"CLAUDE_MODEL: {CLAUDE_MODEL}")
+    else:
+        logger.info("Configuración verificada correctamente")
     
     return len(errors) == 0, errors
 
