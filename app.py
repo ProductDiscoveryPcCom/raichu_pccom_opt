@@ -304,18 +304,111 @@ def render_app_header() -> str:
 
 
 def clear_session_state() -> None:
-    """Limpia el estado de la sesión."""
-    keys_to_clear = [
-        'draft_html', 'analysis_json', 'final_html',
-        'rewrite_analysis', 'generation_in_progress',
-        'current_stage', 'content_history', 'last_config'
+    """
+    Limpia el estado de la sesión - resetea todos los campos del formulario.
+    
+    Limpia:
+    - Resultados de generación (draft, análisis, final)
+    - Campos de reescritura (competidores, HTML, enlaces)
+    - Datos del formulario de nuevo contenido
+    - Estado de búsquedas (SEMrush, GSC)
+    - Valores de widgets (inputs de texto, selectores, etc.)
+    
+    NO limpia:
+    - mode (mantiene el modo actual)
+    - initialized (estado de inicialización)
+    - mode_selector_main (selector de modo)
+    """
+    
+    # --- Resultados de generación ---
+    generation_keys = [
+        'draft_html',
+        'analysis_json', 
+        'final_html',
+        'rewrite_analysis',
+        'generation_in_progress',
+        'current_stage',
+        'content_history',
+        'last_config',
+        'generation_metadata',
+        'verify_result',
+        # Refinamiento
+        'refine_prompt_input',
     ]
-    for key in keys_to_clear:
+    
+    # --- Campos de reescritura ---
+    rewrite_keys = [
+        'html_to_rewrite',
+        'last_rewrite_keyword',
+        'manual_urls_input',
+        'rewrite_competitors_data',
+        'rewrite_gsc_analysis',
+        'rewrite_links',
+        'semrush_response',
+        'show_manual_fallback',
+        # Widgets de reescritura
+        'html_rewrite_input',
+        'rewrite_keyword_input',
+    ]
+    
+    # --- Datos del formulario de nuevo contenido ---
+    form_keys = [
+        'form_data',
+        # Widgets principales de inputs
+        'main_keyword',
+        'main_arquetipo', 
+        'main_pdp_url',
+        'main_length',
+        'main_competitors',
+        'main_instructions',
+    ]
+    
+    # Combinar todas las keys a limpiar
+    all_keys_to_clear = generation_keys + rewrite_keys + form_keys
+    
+    # Limpiar cada key
+    for key in all_keys_to_clear:
         if key in st.session_state:
             del st.session_state[key]
     
+    # Limpiar keys dinámicas de enlaces y otros widgets dinámicos
+    # Importante: convertir a lista para evitar "dictionary changed size during iteration"
+    keys_to_delete = []
+    for key in list(st.session_state.keys()):
+        # NO borrar el selector de modo
+        if key == 'mode_selector_main' or key == 'mode' or key == 'initialized':
+            continue
+            
+        # Enlaces de inputs_FINAL.py (main_internal_url_X, main_pdp_anchor_X, etc.)
+        # Enlaces de rewrite_FINAL.py (rewrite_link_url_X, rewrite_link_text_X)
+        # Preguntas guía del briefing (main_guiding_X)
+        # Producto alternativo (main_alt_url, main_alt_name)
+        # Previews de competidores (preview_comp_X)
+        # Contadores de enlaces (X_link_count)
+        if any(pattern in key for pattern in [
+            # Patrones de enlaces
+            '_url_', '_anchor_', '_link_', '_del_', '_add',
+            'link_url', 'link_anchor', 'link_text',
+            'rewrite_link_url_', 'rewrite_link_text_', 'remove_rewrite_link_',
+            # Patrones de briefing/guiding
+            '_guiding_', 'guiding_',
+            # Patrones de producto alternativo  
+            '_alt_url', '_alt_name',
+            # Patrones de competidores y previews
+            'preview_comp_', 'competitor_',
+            # Contadores
+            '_link_count', '_count',
+        ]):
+            keys_to_delete.append(key)
+    
+    for key in keys_to_delete:
+        if key in st.session_state:
+            del st.session_state[key]
+    
+    # Resetear timestamp
     st.session_state.timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-    logger.info("Estado de sesión limpiado")
+    
+    logger.info(f"Estado de sesión limpiado: {len(all_keys_to_clear) + len(keys_to_delete)} keys eliminadas")
 
 
 # ============================================================================
