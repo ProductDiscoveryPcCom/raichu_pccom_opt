@@ -42,7 +42,7 @@ ARQUETIPOS: Dict[str, Dict[str, Any]] = {
             "Indica 2 limitaciones REALES con evidencia concreta",
             "¿Cuántos días llevas usando el producto? ¿Hay algo que notes 'después de 30 días'?",
             "¿Cuál es el precio actual vs el mínimo histórico? ¿Se espera bajada próximamente?",
-            "Define 3 perfiles de 'cómpralo si...' y 2 de 'evítalo si...'",
+            "Define 3 perfiles de 'es ideal si...' y 2 de 'considera otras opciones si...'",
             "¿Qué 2 alternativas del catálogo mencionarías y por qué característica/precio?"
         ]
     },
