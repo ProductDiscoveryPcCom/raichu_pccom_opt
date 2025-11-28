@@ -1,6 +1,6 @@
 """
 GSC Utils - PcComponentes Content Generator
-Versión 4.2.0
+Versión 4.4.0
 
 Utilidades para Google Search Console (GSC).
 Incluye sistema de caché robusto con TTL, invalidación automática y manual,
@@ -10,6 +10,8 @@ Este módulo proporciona:
 - Sistema de caché con TTL configurable
 - Funciones para cargar y procesar datos de GSC
 - Análisis de keywords y métricas
+- Análisis de canibalización de contenido
+- Gestión de fecha de datos GSC
 - Integración con el flujo de generación de contenido
 
 Autor: PcComponentes - Product Discovery & Content
@@ -53,7 +55,7 @@ except ImportError:
 # VERSIÓN Y CONSTANTES
 # ============================================================================
 
-__version__ = "4.2.0"
+__version__ = "4.4.0"
 
 # Configuración de caché por defecto
 DEFAULT_CACHE_TTL = 3600  # 1 hora en segundos
@@ -66,6 +68,9 @@ GSC_DEFAULT_COLUMNS = [
     'query', 'page', 'clicks', 'impressions', 'ctr', 'position'
 ]
 GSC_METRICS = ['clicks', 'impressions', 'ctr', 'position']
+
+# Configuración de fecha de datos
+GSC_DATA_STALE_DAYS = 7  # Días para considerar datos desactualizados
 
 
 # ============================================================================
@@ -578,6 +583,9 @@ def load_gsc_data(
         return None
     
     try:
+        # Actualizar fecha de carga
+        set_gsc_data_date(datetime.now())
+        
         if _pandas_available:
             return _load_gsc_with_pandas(file_path, encoding)
         else:
@@ -1066,6 +1074,330 @@ def format_gsc_for_prompt(
 
 
 # ============================================================================
+# FECHA DE DATOS GSC
+# ============================================================================
+
+# Variable global para almacenar la fecha de carga
+_gsc_loaded_date: Optional[datetime] = None
+
+
+def get_gsc_data_date() -> Optional[datetime]:
+    """
+    Obtiene la fecha de los datos de GSC cargados.
+    
+    Intenta obtener de (en orden de prioridad):
+    1. Variable global del módulo (_gsc_loaded_date)
+    2. Estado de Streamlit (st.session_state['gsc_data_date'])
+    3. Fecha de modificación del archivo CSV
+    
+    Returns:
+        datetime o None si no hay datos
+    """
+    global _gsc_loaded_date
+    
+    # 1. Cache del módulo
+    if _gsc_loaded_date is not None:
+        return _gsc_loaded_date
+    
+    # 2. Estado de Streamlit
+    try:
+        import streamlit as st
+        if 'gsc_data_date' in st.session_state:
+            return st.session_state['gsc_data_date']
+    except ImportError:
+        pass
+    
+    # 3. Fecha de modificación del archivo
+    try:
+        gsc_file = GSC_DATA_FILE
+        if isinstance(gsc_file, str):
+            gsc_file = Path(gsc_file)
+        
+        if gsc_file.exists():
+            mod_time = gsc_file.stat().st_mtime
+            _gsc_loaded_date = datetime.fromtimestamp(mod_time)
+            return _gsc_loaded_date
+    except Exception as e:
+        logger.debug(f"No se pudo obtener fecha del archivo GSC: {e}")
+    
+    return None
+
+
+def set_gsc_data_date(date: Optional[datetime] = None) -> None:
+    """
+    Establece la fecha de los datos de GSC.
+    
+    Args:
+        date: Fecha a establecer (usa datetime.now() si no se especifica)
+    """
+    global _gsc_loaded_date
+    
+    if date is None:
+        date = datetime.now()
+    
+    _gsc_loaded_date = date
+    
+    # También guardar en Streamlit session_state si está disponible
+    try:
+        import streamlit as st
+        st.session_state['gsc_data_date'] = date
+    except ImportError:
+        pass
+
+
+def get_gsc_data_age_days() -> Optional[int]:
+    """
+    Obtiene la antigüedad de los datos de GSC en días.
+    
+    Returns:
+        Número de días desde la carga/modificación, o None si no hay datos
+    """
+    date = get_gsc_data_date()
+    if date is not None:
+        return (datetime.now() - date).days
+    return None
+
+
+def is_gsc_data_stale(max_days: int = GSC_DATA_STALE_DAYS) -> bool:
+    """
+    Verifica si los datos de GSC están desactualizados.
+    
+    Args:
+        max_days: Número máximo de días para considerar datos frescos
+        
+    Returns:
+        True si los datos tienen más de max_days días o no hay datos
+    """
+    age = get_gsc_data_age_days()
+    if age is None:
+        return True  # Sin datos = desactualizado
+    return age > max_days
+
+
+# ============================================================================
+# ANÁLISIS DE CANIBALIZACIÓN
+# ============================================================================
+
+def check_cannibalization(
+    keyword: str,
+    min_impressions: int = 10,
+    max_results: int = 10
+) -> List[Dict[str, Any]]:
+    """
+    Busca URLs existentes que ya posicionan para una keyword.
+    
+    Esta función ayuda a detectar posible canibalización de contenido,
+    identificando páginas que ya rankean para la keyword objetivo.
+    
+    Args:
+        keyword: Keyword a analizar
+        min_impressions: Mínimo de impresiones para considerar una URL
+        max_results: Máximo de resultados a retornar
+    
+    Returns:
+        Lista de dicts con URLs y métricas:
+        - url: URL de la página
+        - clicks: Total de clicks
+        - impressions: Total de impresiones
+        - position: Posición promedio
+        - ctr: CTR calculado
+    """
+    if not keyword or not keyword.strip():
+        return []
+    
+    keyword_lower = keyword.strip().lower()
+    
+    # Obtener datos GSC
+    gsc_data = None
+    
+    # Intentar desde Streamlit session_state primero
+    try:
+        import streamlit as st
+        gsc_data = st.session_state.get('gsc_data')
+    except ImportError:
+        pass
+    
+    # Si no hay datos en session_state, cargar del archivo
+    if gsc_data is None:
+        try:
+            loaded = load_gsc_data()
+            if loaded:
+                gsc_data = loaded.get('data', [])
+        except Exception as e:
+            logger.warning(f"Error cargando datos GSC para canibalización: {e}")
+            return []
+    
+    if not gsc_data:
+        return []
+    
+    # Si gsc_data es un dict con 'data', extraer la lista
+    if isinstance(gsc_data, dict) and 'data' in gsc_data:
+        gsc_data = gsc_data['data']
+    
+    # Procesar datos
+    url_metrics: Dict[str, Dict[str, Any]] = {}
+    
+    # Si es DataFrame de pandas
+    if _pandas_available and hasattr(gsc_data, 'iterrows'):
+        try:
+            df = gsc_data
+            
+            # Filtrar por keyword
+            mask = df['query'].str.lower().str.contains(keyword_lower, na=False, regex=False)
+            matching = df[mask]
+            
+            # Filtrar por impresiones mínimas
+            if 'impressions' in matching.columns:
+                matching = matching[matching['impressions'] >= min_impressions]
+            
+            # Determinar columna de URL
+            url_col = 'page' if 'page' in matching.columns else 'url'
+            if url_col not in matching.columns:
+                return []
+            
+            # Agrupar por URL
+            grouped = matching.groupby(url_col).agg({
+                'clicks': 'sum',
+                'impressions': 'sum',
+                'position': 'mean'
+            }).reset_index()
+            
+            # Calcular CTR
+            grouped['ctr'] = (grouped['clicks'] / grouped['impressions'] * 100).round(2)
+            
+            # Ordenar y limitar
+            grouped = grouped.sort_values('clicks', ascending=False).head(max_results)
+            
+            results = []
+            for _, row in grouped.iterrows():
+                results.append({
+                    'url': row[url_col],
+                    'clicks': int(row['clicks']),
+                    'impressions': int(row['impressions']),
+                    'position': round(float(row['position']), 1),
+                    'ctr': float(row['ctr'])
+                })
+            
+            return results
+            
+        except Exception as e:
+            logger.warning(f"Error procesando GSC con pandas: {e}")
+            # Continuar con procesamiento manual
+    
+    # Procesamiento manual (lista de dicts)
+    if isinstance(gsc_data, list):
+        for row in gsc_data:
+            query = str(row.get('query', '')).lower()
+            
+            # Verificar si la keyword está en la query
+            if keyword_lower not in query:
+                continue
+            
+            # Filtrar por impresiones mínimas
+            impressions = int(row.get('impressions', 0))
+            if impressions < min_impressions:
+                continue
+            
+            # Obtener URL
+            url = row.get('page') or row.get('url', '')
+            if not url:
+                continue
+            
+            # Acumular métricas por URL
+            if url not in url_metrics:
+                url_metrics[url] = {
+                    'clicks': 0,
+                    'impressions': 0,
+                    'position_sum': 0,
+                    'count': 0
+                }
+            
+            metrics = url_metrics[url]
+            metrics['clicks'] += int(row.get('clicks', 0))
+            metrics['impressions'] += impressions
+            metrics['position_sum'] += float(row.get('position', 0))
+            metrics['count'] += 1
+        
+        # Convertir a lista de resultados
+        results = []
+        for url, metrics in url_metrics.items():
+            avg_position = metrics['position_sum'] / metrics['count'] if metrics['count'] > 0 else 0
+            ctr = (metrics['clicks'] / metrics['impressions'] * 100) if metrics['impressions'] > 0 else 0
+            
+            results.append({
+                'url': url,
+                'clicks': metrics['clicks'],
+                'impressions': metrics['impressions'],
+                'position': round(avg_position, 1),
+                'ctr': round(ctr, 2)
+            })
+        
+        # Ordenar por clicks descendente
+        results.sort(key=lambda x: x['clicks'], reverse=True)
+        
+        return results[:max_results]
+    
+    return []
+
+
+def get_cannibalization_summary(keyword: str) -> Dict[str, Any]:
+    """
+    Obtiene un resumen del análisis de canibalización.
+    
+    Args:
+        keyword: Keyword a analizar
+        
+    Returns:
+        Dict con resumen:
+        - has_risk: bool indicando si hay riesgo de canibalización
+        - total_urls: número de URLs encontradas
+        - total_clicks: suma de clicks
+        - total_impressions: suma de impresiones
+        - best_url: URL con más clicks
+        - urls: lista de URLs con métricas
+        - recommendation: recomendación textual
+    """
+    results = check_cannibalization(keyword)
+    
+    if not results:
+        return {
+            'has_risk': False,
+            'total_urls': 0,
+            'total_clicks': 0,
+            'total_impressions': 0,
+            'best_url': None,
+            'urls': [],
+            'recommendation': 'No hay contenido existente que posicione para esta keyword. Puedes crear contenido nuevo.'
+        }
+    
+    total_urls = len(results)
+    total_clicks = sum(r['clicks'] for r in results)
+    total_impressions = sum(r['impressions'] for r in results)
+    best_url = results[0]['url'] if results else None
+    
+    # Generar recomendación basada en la situación
+    if total_urls == 1:
+        if results[0]['clicks'] < 10:
+            recommendation = f"Ya existe contenido con pocas visitas. Considera actualizar '{best_url}' en lugar de crear nuevo contenido."
+        else:
+            recommendation = f"Ya existe contenido posicionado en '{best_url}'. Evalúa si actualizar el existente o crear contenido complementario."
+    elif total_urls <= 3:
+        recommendation = f"Se encontraron {total_urls} URLs compitiendo. Considera consolidar el contenido o actualizar la página principal ({best_url})."
+    else:
+        recommendation = f"⚠️ Alta fragmentación detectada ({total_urls} URLs). Recomendamos consolidar contenido y usar etiquetas canonical para evitar canibalización."
+    
+    return {
+        'has_risk': True,
+        'total_urls': total_urls,
+        'total_clicks': total_clicks,
+        'total_impressions': total_impressions,
+        'best_url': best_url,
+        'urls': results,
+        'recommendation': recommendation
+    }
+
+
+# ============================================================================
 # EXPORTS
 # ============================================================================
 
@@ -1110,7 +1442,18 @@ __all__ = [
     'get_cache_stats',
     'format_gsc_for_prompt',
     
+    # Fecha de datos GSC
+    'get_gsc_data_date',
+    'set_gsc_data_date',
+    'get_gsc_data_age_days',
+    'is_gsc_data_stale',
+    
+    # Análisis de canibalización
+    'check_cannibalization',
+    'get_cannibalization_summary',
+    
     # Constantes
     'DEFAULT_CACHE_TTL',
     'DEFAULT_CACHE_MAX_SIZE',
+    'GSC_DATA_STALE_DAYS',
 ]
