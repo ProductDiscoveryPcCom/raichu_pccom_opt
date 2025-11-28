@@ -4,16 +4,14 @@ Versión 4.2.0
 
 Módulo de scraping para extraer contenido de páginas web.
 Incluye timeout configurable, reintentos con backoff exponencial,
-validación exhaustiva de URLs, y manejo robusto de errores HTTP.
+y manejo robusto de errores HTTP.
 
 Este módulo proporciona:
 - Scraping de PDPs de PcComponentes
 - Scraping de páginas de competidores
 - Extracción de contenido HTML limpio
-- Validación exhaustiva de URLs (seguridad, formato, dominios)
+- Validación de URLs
 - Sistema de reintentos configurable
-- Protección contra SSRF y URLs maliciosas
-- Parser HTML consistente vía html_utils
 
 Autor: PcComponentes - Product Discovery & Content
 """
@@ -30,55 +28,6 @@ from enum import Enum
 logger = logging.getLogger(__name__)
 
 # ============================================================================
-# IMPORTS DE URL VALIDATOR
-# ============================================================================
-
-try:
-    from utils.url_validator import (
-        URLValidator,
-        ValidationResult as URLValidationResult,
-        validate_url as validate_url_external,
-        is_valid_url,
-        is_safe_url,
-        is_pccomponentes_url,
-        sanitize_url,
-        filter_safe_urls,
-        create_pccomponentes_validator,
-        create_competitor_validator,
-        URLValidationError,
-        UnsafeURLError,
-        ThreatType,
-    )
-    _url_validator_available = True
-except ImportError as e:
-    logger.warning(f"url_validator no disponible, usando validación básica: {e}")
-    _url_validator_available = False
-
-# ============================================================================
-# IMPORTS DE HTML UTILS
-# ============================================================================
-
-try:
-    from utils.html_utils import (
-        HTMLParser,
-        get_html_parser,
-        get_parser as get_bs4_parser,
-        is_bs4_available as check_bs4_available,
-        extract_content as html_extract_content,
-        extract_text as html_extract_text,
-        sanitize_html,
-        clean_html,
-        extract_meta_tags as html_extract_meta_tags,
-        get_word_count,
-        strip_tags,
-        ExtractedContent,
-    )
-    _html_utils_available = True
-except ImportError as e:
-    logger.warning(f"html_utils no disponible: {e}")
-    _html_utils_available = False
-
-# ============================================================================
 # IMPORTS CON MANEJO DE ERRORES
 # ============================================================================
 
@@ -91,34 +40,27 @@ except ImportError as e:
     logger.error(f"No se pudo importar requests: {e}")
     _requests_available = False
 
-# BeautifulSoup - usar html_utils si está disponible
-if _html_utils_available:
-    _bs4_available = check_bs4_available()
-    _bs4_parser = get_bs4_parser() if _bs4_available else 'html.parser'
-else:
-    try:
-        from bs4 import BeautifulSoup
-        _bs4_available = True
-        _bs4_parser = 'html.parser'  # Parser por defecto
-    except ImportError as e:
-        logger.warning(f"BeautifulSoup no disponible: {e}")
-        _bs4_available = False
-        _bs4_parser = None
+try:
+    from bs4 import BeautifulSoup
+    _bs4_available = True
+except ImportError as e:
+    logger.warning(f"BeautifulSoup no disponible: {e}")
+    _bs4_available = False
 
 try:
     from config.settings import (
-        REQUEST_TIMEOUT,
-        SCRAPER_MAX_RETRIES,
-        USER_AGENT,
-        DEFAULT_HEADERS,
-        PCCOMPONENTES_DOMAINS,
+        REQUEST_TIMEOUT as SETTINGS_TIMEOUT,
+        MAX_RETRIES as SETTINGS_MAX_RETRIES,
+        USER_AGENT as SETTINGS_USER_AGENT,
+        PCCOMPONENTES_DOMAINS as SETTINGS_DOMAINS,
     )
+    _settings_available = True
 except ImportError:
-    REQUEST_TIMEOUT = 30
-    SCRAPER_MAX_RETRIES = 3
-    USER_AGENT = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'
-    DEFAULT_HEADERS = {'User-Agent': USER_AGENT}
-    PCCOMPONENTES_DOMAINS = ['www.pccomponentes.com', 'pccomponentes.com']
+    _settings_available = False
+    SETTINGS_TIMEOUT = 30
+    SETTINGS_MAX_RETRIES = 3
+    SETTINGS_USER_AGENT = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'
+    SETTINGS_DOMAINS = ['www.pccomponentes.com', 'pccomponentes.com']
 
 
 # ============================================================================
@@ -137,6 +79,23 @@ DEFAULT_MAX_RETRIES = 3
 DEFAULT_RETRY_DELAY = 1.0
 MAX_RETRY_DELAY = 30.0
 BACKOFF_MULTIPLIER = 2.0
+
+# ALIAS PARA COMPATIBILIDAD CON core/__init__.py
+REQUEST_TIMEOUT: int = SETTINGS_TIMEOUT if _settings_available else DEFAULT_TIMEOUT
+MAX_RETRIES: int = SETTINGS_MAX_RETRIES if _settings_available else DEFAULT_MAX_RETRIES
+USER_AGENT: str = SETTINGS_USER_AGENT if _settings_available else 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'
+PCCOMPONENTES_DOMAINS: List[str] = SETTINGS_DOMAINS if _settings_available else ['www.pccomponentes.com', 'pccomponentes.com']
+
+# Headers por defecto
+DEFAULT_HEADERS = {
+    'User-Agent': USER_AGENT,
+    'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8',
+    'Accept-Language': 'es-ES,es;q=0.9,en;q=0.8',
+    'Accept-Encoding': 'gzip, deflate, br',
+    'DNT': '1',
+    'Connection': 'keep-alive',
+    'Upgrade-Insecure-Requests': '1',
+}
 
 # Códigos HTTP que permiten reintento
 RETRYABLE_STATUS_CODES = [408, 429, 500, 502, 503, 504]
@@ -363,7 +322,7 @@ class WebScraper:
             f"max_retries={self._config.retry.max_retries}"
         )
     
-    def _create_session(self) -> requests.Session:
+    def _create_session(self) -> 'requests.Session':
         """Crea una sesión de requests con retry configurado."""
         session = requests.Session()
         
@@ -527,7 +486,7 @@ class WebScraper:
         self,
         url: str,
         timeout: Tuple[float, float]
-    ) -> requests.Response:
+    ) -> 'requests.Response':
         """
         Realiza la petición HTTP con reintentos manuales adicionales.
         
@@ -590,57 +549,22 @@ class WebScraper:
     
     def _validate_url(self, url: str) -> str:
         """
-        Valida y normaliza una URL usando validación exhaustiva.
+        Valida y normaliza una URL.
         
         Args:
             url: URL a validar
             
         Returns:
-            URL normalizada y validada
+            URL normalizada
             
         Raises:
-            URLValidationError: Si la URL no es válida o es insegura
+            URLValidationError: Si la URL no es válida
         """
         if not url:
             raise URLValidationError("URL vacía", url)
         
         url = url.strip()
         
-        # Usar validador externo si está disponible
-        if _url_validator_available:
-            result = validate_url_external(url)
-            
-            if not result.is_valid:
-                raise URLValidationError(
-                    result.error or "URL inválida",
-                    url,
-                    details={
-                        'status': result.status.value if result.status else 'unknown',
-                        'threat_type': result.threat_type.value if result.threat_type else 'none'
-                    }
-                )
-            
-            # Log de advertencias si existen
-            if result.warnings:
-                for warning in result.warnings:
-                    logger.warning(f"URL warning: {warning}")
-            
-            # Retornar URL normalizada
-            return result.normalized_url or url
-        
-        # Fallback: validación básica si el módulo no está disponible
-        return self._basic_validate_url(url)
-    
-    def _basic_validate_url(self, url: str) -> str:
-        """
-        Validación básica de URL (fallback).
-        
-        Args:
-            url: URL a validar
-            
-        Returns:
-            URL validada
-        """
         # Añadir protocolo si falta
         if not url.startswith(('http://', 'https://')):
             url = 'https://' + url
@@ -657,36 +581,11 @@ class WebScraper:
         if parsed.scheme not in ('http', 'https'):
             raise URLValidationError(f"Esquema no soportado: {parsed.scheme}", url)
         
-        # Validación básica de seguridad
-        dangerous_patterns = ['javascript:', 'data:', '<script', 'onerror=']
-        url_lower = url.lower()
-        for pattern in dangerous_patterns:
-            if pattern in url_lower:
-                raise URLValidationError(f"URL contiene patrón peligroso: {pattern}", url)
-        
         return url
-    
-    def validate_url_safe(self, url: str) -> Tuple[bool, Optional[str], Optional[str]]:
-        """
-        Valida una URL de forma segura (sin lanzar excepciones).
-        
-        Args:
-            url: URL a validar
-            
-        Returns:
-            Tuple[es_válida, url_normalizada, mensaje_error]
-        """
-        try:
-            normalized = self._validate_url(url)
-            return (True, normalized, None)
-        except URLValidationError as e:
-            return (False, None, str(e))
-        except Exception as e:
-            return (False, None, f"Error inesperado: {e}")
     
     def _extract_content(self, html: str) -> Dict[str, str]:
         """
-        Extrae contenido principal de HTML usando parser consistente.
+        Extrae contenido principal de HTML.
         
         Args:
             html: HTML completo de la página
@@ -694,26 +593,11 @@ class WebScraper:
         Returns:
             Dict con 'content', 'title', 'meta_description'
         """
-        # Usar html_utils si está disponible (parser consistente)
-        if _html_utils_available:
-            try:
-                extracted = html_extract_content(html)
-                return {
-                    'content': extracted.text,
-                    'title': extracted.title,
-                    'meta_description': extracted.meta_description
-                }
-            except Exception as e:
-                logger.warning(f"Error en html_utils, usando fallback: {e}")
-        
-        # Fallback con BeautifulSoup directo
         if not _bs4_available:
-            return self._extract_content_regex(html)
+            return {'content': html, 'title': '', 'meta_description': ''}
         
         try:
-            # Usar el parser consistente detectado
-            from bs4 import BeautifulSoup
-            soup = BeautifulSoup(html, _bs4_parser)
+            soup = BeautifulSoup(html, 'html.parser')
             
             # Extraer título
             title = ""
@@ -757,53 +641,7 @@ class WebScraper:
         
         except Exception as e:
             logger.warning(f"Error extrayendo contenido: {e}")
-            return self._extract_content_regex(html)
-    
-    def _extract_content_regex(self, html: str) -> Dict[str, str]:
-        """
-        Extrae contenido usando regex (fallback sin BeautifulSoup).
-        
-        Args:
-            html: String HTML
-            
-        Returns:
-            Dict con contenido extraído
-        """
-        import html as html_module
-        
-        # Eliminar scripts y styles
-        html_clean = re.sub(r'<script[^>]*>.*?</script>', '', html, flags=re.DOTALL | re.IGNORECASE)
-        html_clean = re.sub(r'<style[^>]*>.*?</style>', '', html_clean, flags=re.DOTALL | re.IGNORECASE)
-        
-        # Extraer título
-        title = ""
-        title_match = re.search(r'<title[^>]*>(.*?)</title>', html, re.IGNORECASE | re.DOTALL)
-        if title_match:
-            title = html_module.unescape(title_match.group(1).strip())
-        
-        # Extraer meta description
-        meta_description = ""
-        meta_match = re.search(
-            r'<meta[^>]*name=["\']description["\'][^>]*content=["\']([^"\']*)["\']',
-            html, re.IGNORECASE
-        )
-        if meta_match:
-            meta_description = html_module.unescape(meta_match.group(1).strip())
-        
-        # Eliminar todos los tags
-        content = re.sub(r'<[^>]+>', ' ', html_clean)
-        
-        # Decodificar entidades HTML
-        content = html_module.unescape(content)
-        
-        # Limpiar espacios
-        content = re.sub(r'\s+', ' ', content).strip()
-        
-        return {
-            'content': content,
-            'title': title,
-            'meta_description': meta_description
-        }
+            return {'content': html, 'title': '', 'meta_description': ''}
     
     def _simplify_error(self, error: Exception) -> str:
         """Simplifica mensaje de error para el usuario."""
@@ -931,28 +769,16 @@ def scrape_pdp_data(
     Returns:
         Dict con datos del producto o None si hay error
     """
-    # Validar que sea URL de PcComponentes usando el validador
-    if _url_validator_available:
-        if not is_pccomponentes_url(url):
-            logger.warning(f"URL no es de PcComponentes o es inválida: {url}")
-            return None
+    # Validar que sea URL de PcComponentes
+    try:
+        parsed = urlparse(url)
+        domain = parsed.netloc.lower()
         
-        # Verificar seguridad
-        is_safe, error_msg = is_safe_url(url)
-        if not is_safe:
-            logger.warning(f"URL no segura: {error_msg}")
+        if not any(pcc in domain for pcc in PCCOMPONENTES_DOMAINS):
+            logger.warning(f"URL no es de PcComponentes: {url}")
             return None
-    else:
-        # Fallback: validación básica
-        try:
-            parsed = urlparse(url)
-            domain = parsed.netloc.lower()
-            
-            if not any(pcc in domain for pcc in PCCOMPONENTES_DOMAINS):
-                logger.warning(f"URL no es de PcComponentes: {url}")
-                return None
-        except Exception:
-            return None
+    except Exception:
+        return None
     
     result = scrape_url(url, timeout=timeout, extract_content=True)
     
@@ -974,19 +800,15 @@ def scrape_pdp_data(
 def scrape_competitor_urls(
     urls: List[str],
     timeout: Optional[float] = None,
-    max_concurrent: int = 1,
-    validate_urls: bool = True,
-    exclude_pccomponentes: bool = True
+    max_concurrent: int = 1
 ) -> List[Dict[str, Any]]:
     """
-    Scrapea múltiples URLs de competidores con validación.
+    Scrapea múltiples URLs de competidores.
     
     Args:
         urls: Lista de URLs a scrapear
         timeout: Timeout por URL (opcional)
         max_concurrent: Número máximo de requests concurrentes (futuro)
-        validate_urls: Si validar URLs antes de scrapear
-        exclude_pccomponentes: Si excluir URLs de PcComponentes
         
     Returns:
         Lista de dicts con datos de cada competidor
@@ -994,47 +816,7 @@ def scrape_competitor_urls(
     results = []
     scraper = get_scraper()
     
-    # Filtrar y validar URLs
-    urls_to_scrape = []
-    
     for url in urls:
-        # Validar URL
-        if validate_urls and _url_validator_available:
-            is_safe, error_msg = is_safe_url(url)
-            
-            if not is_safe:
-                logger.warning(f"URL inválida o insegura, omitiendo: {url} - {error_msg}")
-                results.append({
-                    'url': url,
-                    'success': False,
-                    'title': '',
-                    'content': '',
-                    'word_count': 0,
-                    'error': f"URL inválida: {error_msg}",
-                    'response_time': 0,
-                    'skipped': True,
-                })
-                continue
-            
-            # Excluir PcComponentes si está configurado
-            if exclude_pccomponentes and is_pccomponentes_url(url):
-                logger.info(f"Excluyendo URL de PcComponentes: {url}")
-                results.append({
-                    'url': url,
-                    'success': False,
-                    'title': '',
-                    'content': '',
-                    'word_count': 0,
-                    'error': "URL de PcComponentes excluida de competidores",
-                    'response_time': 0,
-                    'skipped': True,
-                })
-                continue
-        
-        urls_to_scrape.append(url)
-    
-    # Scrapear URLs validadas
-    for url in urls_to_scrape:
         logger.info(f"Scrapeando competidor: {url}")
         
         result = scraper.scrape_url(url, extract_content=True, timeout=timeout)
@@ -1047,18 +829,16 @@ def scrape_competitor_urls(
             'word_count': result.word_count,
             'error': result.error,
             'response_time': result.response_time,
-            'skipped': False,
         }
         
         results.append(competitor_data)
         
         # Pequeña pausa entre requests para no sobrecargar
-        if len(urls_to_scrape) > 1:
+        if len(urls) > 1:
             time.sleep(0.5)
     
-    successful = sum(1 for r in results if r.get('success'))
-    skipped = sum(1 for r in results if r.get('skipped'))
-    logger.info(f"Scraping completado: {successful}/{len(urls)} exitosas, {skipped} omitidas")
+    successful = sum(1 for r in results if r['success'])
+    logger.info(f"Scraping completado: {successful}/{len(urls)} URLs exitosas")
     
     return results
 
@@ -1109,9 +889,7 @@ def extract_product_info(html: str) -> Dict[str, Any]:
         return {'error': 'BeautifulSoup no disponible'}
     
     try:
-        # Usar parser consistente
-        from bs4 import BeautifulSoup
-        soup = BeautifulSoup(html, _bs4_parser)
+        soup = BeautifulSoup(html, 'html.parser')
         
         # Buscar título del producto
         title = ""
@@ -1158,13 +936,6 @@ def extract_page_content(html: str) -> str:
     Returns:
         Texto limpio
     """
-    # Usar html_utils si está disponible
-    if _html_utils_available:
-        try:
-            return html_extract_text(html)
-        except Exception as e:
-            logger.warning(f"Error en html_utils extract_text: {e}")
-    
     if not _bs4_available:
         # Fallback: eliminar tags con regex
         text = re.sub(r'<script[^>]*>.*?</script>', '', html, flags=re.DOTALL)
@@ -1174,9 +945,7 @@ def extract_page_content(html: str) -> str:
         return text.strip()
     
     try:
-        # Usar parser consistente
-        from bs4 import BeautifulSoup
-        soup = BeautifulSoup(html, _bs4_parser)
+        soup = BeautifulSoup(html, 'html.parser')
         
         # Eliminar scripts y estilos
         for tag in soup(['script', 'style', 'nav', 'header', 'footer']):
@@ -1203,20 +972,11 @@ def extract_meta_tags(html: str) -> Dict[str, str]:
     Returns:
         Dict con meta tags
     """
-    # Usar html_utils si está disponible
-    if _html_utils_available:
-        try:
-            return html_extract_meta_tags(html)
-        except Exception as e:
-            logger.warning(f"Error en html_utils extract_meta_tags: {e}")
-    
     if not _bs4_available:
         return {}
     
     try:
-        # Usar parser consistente
-        from bs4 import BeautifulSoup
-        soup = BeautifulSoup(html, _bs4_parser)
+        soup = BeautifulSoup(html, 'html.parser')
         
         meta_tags = {}
         
@@ -1245,13 +1005,6 @@ def extract_meta_tags(html: str) -> Dict[str, str]:
         if robots:
             meta_tags['robots'] = robots.get('content', '')
         
-        # OG tags
-        for og_tag in soup.find_all('meta', property=re.compile(r'^og:')):
-            prop = og_tag.get('property', '')
-            content = og_tag.get('content', '')
-            if prop and content:
-                meta_tags[prop] = content
-        
         return meta_tags
     
     except Exception as e:
@@ -1270,14 +1023,7 @@ def clean_html_content(html: str, max_length: Optional[int] = None) -> str:
     Returns:
         Texto limpio
     """
-    # Usar html_utils si está disponible
-    if _html_utils_available:
-        try:
-            text = html_extract_text(html)
-        except Exception:
-            text = extract_page_content(html)
-    else:
-        text = extract_page_content(html)
+    text = extract_page_content(html)
     
     if max_length and len(text) > max_length:
         text = text[:max_length] + "..."
@@ -1352,6 +1098,25 @@ def is_valid_pdp_url(url: str) -> bool:
         return False
 
 
+def validate_urls_for_scraping(urls: List[str]) -> List[str]:
+    """
+    Filtra y valida URLs para scraping.
+    
+    Args:
+        urls: Lista de URLs a validar
+        
+    Returns:
+        Lista de URLs válidas
+    """
+    valid_urls = []
+    for url in urls:
+        if validate_url(url):
+            valid_urls.append(url)
+        else:
+            logger.warning(f"URL inválida descartada: {url}")
+    return valid_urls
+
+
 # ============================================================================
 # UTILIDADES
 # ============================================================================
@@ -1363,63 +1128,12 @@ def is_scraper_available() -> bool:
 
 def get_scraper_info() -> Dict[str, Any]:
     """Obtiene información del scraper."""
-    info = {
+    return {
         'available': _requests_available,
         'bs4_available': _bs4_available,
-        'bs4_parser': _bs4_parser,
-        'html_utils_available': _html_utils_available,
-        'url_validator_available': _url_validator_available,
         'default_timeout': DEFAULT_TIMEOUT,
         'default_max_retries': DEFAULT_MAX_RETRIES,
         'version': __version__,
-    }
-    
-    # Añadir parsers disponibles si html_utils está cargado
-    if _html_utils_available:
-        try:
-            from utils.html_utils import get_available_parsers
-            info['available_parsers'] = get_available_parsers()
-        except Exception:
-            pass
-    
-    return info
-
-
-def validate_urls_for_scraping(urls: List[str]) -> Dict[str, Any]:
-    """
-    Valida una lista de URLs para scraping.
-    
-    Args:
-        urls: Lista de URLs a validar
-        
-    Returns:
-        Dict con URLs válidas, inválidas y detalles
-    """
-    valid_urls = []
-    invalid_urls = []
-    
-    scraper = get_scraper()
-    
-    for url in urls:
-        is_valid, normalized, error = scraper.validate_url_safe(url)
-        
-        if is_valid:
-            valid_urls.append({
-                'original': url,
-                'normalized': normalized,
-            })
-        else:
-            invalid_urls.append({
-                'url': url,
-                'error': error,
-            })
-    
-    return {
-        'valid': valid_urls,
-        'invalid': invalid_urls,
-        'valid_count': len(valid_urls),
-        'invalid_count': len(invalid_urls),
-        'total': len(urls),
     }
 
 
@@ -1465,7 +1179,7 @@ __all__ = [
     'clean_html_content',
     'normalize_text',
     
-    # Validación de URLs
+    # Validación
     'validate_url',
     'is_valid_pdp_url',
     'validate_urls_for_scraping',
@@ -1474,20 +1188,13 @@ __all__ = [
     'is_scraper_available',
     'get_scraper_info',
     
-    # Constantes
+    # Constantes - IMPORTANTES PARA COMPATIBILIDAD
     'DEFAULT_TIMEOUT',
     'DEFAULT_MAX_RETRIES',
     'MIN_TIMEOUT',
     'MAX_TIMEOUT',
+    'REQUEST_TIMEOUT',
+    'MAX_RETRIES',
+    'USER_AGENT',
     'PCCOMPONENTES_DOMAINS',
 ]
-
-# Re-export funciones del url_validator si está disponible
-if _url_validator_available:
-    __all__.extend([
-        'is_valid_url',
-        'is_safe_url',
-        'is_pccomponentes_url',
-        'sanitize_url',
-        'filter_safe_urls',
-    ])
