@@ -56,14 +56,19 @@ def _load_config():
     # 1. Intentar cargar desde st.secrets (Streamlit Cloud)
     try:
         # Nombres según tu archivo secrets.toml
-        config['api_key'] = st.secrets.get('claude_key', '')
-        config['model'] = st.secrets.get('claude_model', config['model'])
-        config['max_tokens'] = st.secrets.get('max_tokens', config['max_tokens'])
-        config['temperature'] = st.secrets.get('temperature', config['temperature'])
+        # Usamos acceso directo con fallback para compatibilidad
+        if 'claude_key' in st.secrets:
+            config['api_key'] = st.secrets['claude_key']
+        if 'claude_model' in st.secrets:
+            config['model'] = st.secrets['claude_model']
+        if 'max_tokens' in st.secrets:
+            config['max_tokens'] = st.secrets['max_tokens']
+        if 'temperature' in st.secrets:
+            config['temperature'] = st.secrets['temperature']
         
         # Debug mode está en [settings]
-        if 'settings' in st.secrets:
-            config['debug_mode'] = st.secrets.settings.get('debug_mode', False)
+        if 'settings' in st.secrets and 'debug_mode' in st.secrets.settings:
+            config['debug_mode'] = st.secrets.settings['debug_mode']
         
         if config['api_key']:
             logger.info("Configuración cargada desde st.secrets")
@@ -266,21 +271,25 @@ def render_app_header() -> str:
     Renderiza el header de la aplicación.
     
     Returns:
-        Modo seleccionado ('new' o 'rewrite')
+        Modo seleccionado ('new', 'rewrite' o 'verify')
     """
     st.title(f"🚀 {APP_TITLE}")
     st.caption(f"Versión {__version__} | Generación de contenido SEO en 3 etapas")
     
     st.markdown("---")
     
-    # Selector de modo - ÚNICO en toda la app
-    col1, col2, col3 = st.columns([2, 2, 1])
+    # Selector de modo - ÚNICO en toda la app (ahora con 3 opciones)
+    col1, col2, col3 = st.columns([3, 1, 1])
     
     with col1:
         mode = st.radio(
-            "Modo de Generación",
-            options=['new', 'rewrite'],
-            format_func=lambda x: '📝 Nuevo Contenido' if x == 'new' else '🔄 Reescritura Competitiva',
+            "Modo",
+            options=['new', 'rewrite', 'verify'],
+            format_func=lambda x: {
+                'new': '📝 Nuevo Contenido',
+                'rewrite': '🔄 Reescritura Competitiva',
+                'verify': '🔍 Verificar Keyword'
+            }.get(x, x),
             horizontal=True,
             key='mode_selector_main'
         )
@@ -379,6 +388,202 @@ def render_rewrite_mode() -> None:
     
     if generate_clicked:
         execute_generation_pipeline(config, mode='rewrite')
+
+
+# ============================================================================
+# MODO VERIFICAR KEYWORD
+# ============================================================================
+
+def render_verify_mode() -> None:
+    """
+    Renderiza el modo de verificación de keyword.
+    Solo comprueba si la keyword ya rankea sin generar contenido.
+    """
+    
+    st.markdown("### 🔍 Verificar Keyword en Contenido Existente")
+    
+    st.info("""
+    **¿Para qué sirve?**
+    
+    Comprueba si ya tienes contenido rankeando para una keyword antes de crear algo nuevo.
+    Esto te ayuda a evitar **canibalización de keywords** (cuando múltiples URLs 
+    compiten por la misma búsqueda).
+    """)
+    
+    # Input de keyword
+    keyword = st.text_input(
+        "🎯 Keyword a verificar",
+        placeholder="Ej: mejores portátiles gaming 2025",
+        help="Introduce la keyword que quieres verificar"
+    )
+    
+    if not keyword or len(keyword.strip()) < 3:
+        st.warning("👆 Introduce una keyword de al menos 3 caracteres para verificar")
+        return
+    
+    # Cargar módulo GSC
+    try:
+        from utils.gsc_utils import (
+            search_existing_content,
+            get_content_coverage_summary,
+            load_gsc_keywords_csv
+        )
+        _gsc_utils_available = True
+    except ImportError:
+        _gsc_utils_available = False
+    
+    st.markdown("---")
+    
+    # Botón de verificación
+    col1, col2, col3 = st.columns([1, 2, 1])
+    
+    with col2:
+        verify_clicked = st.button(
+            "🔍 Verificar Keyword",
+            type="primary",
+            use_container_width=True
+        )
+    
+    if verify_clicked:
+        if _gsc_utils_available:
+            # Usar funciones directamente
+            st.markdown("---")
+            with st.spinner(f"🔍 Buscando '{keyword}' en datos de GSC..."):
+                try:
+                    # Cargar datos
+                    df = load_gsc_keywords_csv()
+                    
+                    if df is None or (hasattr(df, 'empty') and df.empty):
+                        st.warning("⚠️ No se pudieron cargar los datos de GSC")
+                        return
+                    
+                    # Buscar contenido existente
+                    matches = search_existing_content(keyword)
+                    summary = get_content_coverage_summary(keyword)
+                    
+                    # Mostrar resultados
+                    render_verify_results(keyword, matches, summary)
+                    
+                except Exception as e:
+                    st.error(f"❌ Error al verificar: {e}")
+                    logger.error(f"Error en verificación GSC: {e}")
+        
+        else:
+            st.error("""
+            ❌ **Módulo GSC no disponible**
+            
+            Para usar esta funcionalidad necesitas:
+            1. El archivo `ui/gsc_section.py` o
+            2. El archivo `utils/gsc_utils.py` con las funciones de búsqueda
+            3. Un CSV con datos de Google Search Console (`gsc_keywords.csv`)
+            """)
+
+
+def render_verify_results(keyword: str, matches: List[Dict], summary: Dict) -> None:
+    """
+    Renderiza los resultados de verificación de keyword.
+    
+    Args:
+        keyword: Keyword verificada
+        matches: Lista de URLs que coinciden
+        summary: Resumen del análisis
+    """
+    
+    st.markdown("### 📊 Resultados de la Verificación")
+    
+    if not matches:
+        st.success(f"""
+        ✅ **No se encontró contenido existente para "{keyword}"**
+        
+        Puedes crear contenido nuevo para esta keyword sin riesgo de canibalización.
+        
+        💡 **Recomendación:** Procede con la generación usando el modo "Nuevo Contenido" 
+        o "Reescritura Competitiva".
+        """)
+        return
+    
+    # Hay matches - mostrar alerta según gravedad
+    num_urls = len(set(m.get('url', '') for m in matches))
+    
+    if num_urls == 1:
+        st.warning(f"""
+        ⚠️ **Ya tienes contenido rankeando para "{keyword}"**
+        
+        Se encontró **1 URL** que ya posiciona para esta keyword o variaciones similares.
+        
+        💡 **Recomendación:** Considera mejorar el contenido existente en lugar de crear uno nuevo.
+        """)
+    else:
+        st.error(f"""
+        🔴 **Posible canibalización detectada para "{keyword}"**
+        
+        Se encontraron **{num_urls} URLs** compitiendo por esta keyword.
+        
+        💡 **Recomendación:** Consolida el contenido en una sola URL o diferencia 
+        claramente la intención de cada página.
+        """)
+    
+    # Métricas principales
+    col1, col2, col3, col4 = st.columns(4)
+    
+    with col1:
+        st.metric("URLs Encontradas", num_urls)
+    
+    with col2:
+        best_position = min(m.get('position', 100) for m in matches) if matches else 0
+        st.metric("Mejor Posición", f"#{best_position:.0f}")
+    
+    with col3:
+        total_clicks = sum(m.get('clicks', 0) for m in matches)
+        st.metric("Total Clics", f"{total_clicks:,}")
+    
+    with col4:
+        total_impressions = sum(m.get('impressions', 0) for m in matches)
+        st.metric("Total Impresiones", f"{total_impressions:,}")
+    
+    # Tabla de matches
+    with st.expander("📋 Ver URLs que rankean", expanded=True):
+        # Crear tabla
+        table_data = []
+        for m in matches:
+            table_data.append({
+                'URL': m.get('url', ''),
+                'Query': m.get('query', m.get('keyword', '')),
+                'Posición': f"#{m.get('position', 0):.0f}",
+                'Clics': m.get('clicks', 0),
+                'Impresiones': f"{m.get('impressions', 0):,}",
+                'CTR': f"{m.get('ctr', 0):.2%}" if isinstance(m.get('ctr', 0), (int, float)) else m.get('ctr', '0%'),
+                'Score': m.get('match_score', 0),
+            })
+        
+        if table_data:
+            import pandas as pd
+            df = pd.DataFrame(table_data)
+            st.dataframe(
+                df,
+                use_container_width=True,
+                hide_index=True,
+                column_config={
+                    'URL': st.column_config.LinkColumn('URL', width='large'),
+                    'Clics': st.column_config.NumberColumn('Clics', format='%d'),
+                }
+            )
+    
+    # Recomendaciones según summary
+    if summary:
+        st.markdown("---")
+        st.markdown("### 💡 Recomendaciones")
+        
+        recommendation = summary.get('recommendation', '')
+        
+        if 'create_new' in recommendation.lower() or not matches:
+            st.success("✅ Puedes crear contenido nuevo para esta keyword")
+        elif 'improve' in recommendation.lower():
+            st.info("📝 Considera mejorar el contenido existente")
+        elif 'consolidate' in recommendation.lower():
+            st.warning("🔄 Considera consolidar el contenido en una sola URL")
+        elif 'caution' in recommendation.lower() or num_urls > 1:
+            st.error("⚠️ Procede con cautela - hay riesgo de canibalización")
 
 
 # ============================================================================
@@ -995,11 +1200,14 @@ def main():
     # Renderizar según modo
     if mode == 'new':
         render_new_content_mode()
-    else:
+    elif mode == 'rewrite':
         render_rewrite_mode()
+    elif mode == 'verify':
+        render_verify_mode()
     
-    # Resultados
-    render_results()
+    # Resultados (solo para modos de generación)
+    if mode in ['new', 'rewrite']:
+        render_results()
     
     # Refinamiento (solo si hay contenido final)
     if st.session_state.get('final_html'):
