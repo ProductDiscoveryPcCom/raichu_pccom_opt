@@ -55,7 +55,7 @@ except ImportError:
 # VERSIÓN Y CONSTANTES
 # ============================================================================
 
-__version__ = "4.4.0"
+__version__ = "4.5.0"
 
 # Configuración de caché por defecto
 DEFAULT_CACHE_TTL = 3600  # 1 hora en segundos
@@ -71,6 +71,39 @@ GSC_METRICS = ['clicks', 'impressions', 'ctr', 'position']
 
 # Configuración de fecha de datos
 GSC_DATA_STALE_DAYS = 7  # Días para considerar datos desactualizados
+
+# Fechas del dataset (actualizar al cargar nuevos datos)
+DATASET_START_DATE = datetime(2025, 1, 1)  # Actualizar con cada nuevo dataset
+DATASET_END_DATE = datetime(2025, 1, 31)   # Actualizar con cada nuevo dataset
+
+# ============================================================================
+# CONSTANTES PARA UI/GSC_SECTION
+# ============================================================================
+
+# Mensajes de recomendación según análisis
+RECOMMENDATION_MESSAGES = {
+    'create_new': "✅ Puedes crear contenido nuevo para esta keyword sin riesgo de canibalización.",
+    'already_ranking_well': "⚠️ Ya tienes contenido bien posicionado para esta keyword. Considera mejorar el existente.",
+    'already_ranking': "⚠️ Ya tienes contenido rankeando. Evalúa si crear nuevo contenido o mejorar el existente.",
+    'consolidate': "🔴 Tienes múltiples URLs compitiendo. Considera consolidar el contenido.",
+    'low_performance': "🟡 El contenido existente tiene bajo rendimiento. Podrías crear algo mejor.",
+}
+
+# Colores para niveles de riesgo de canibalización
+RISK_LEVEL_COLORS = {
+    'none': '#28a745',    # Verde
+    'low': '#6c757d',     # Gris
+    'medium': '#ffc107',  # Amarillo
+    'high': '#dc3545',    # Rojo
+}
+
+# Descripciones de tipos de match
+MATCH_TYPE_DESCRIPTIONS = {
+    'exact': 'Coincidencia exacta',
+    'contains': 'Keyword contenida',
+    'partial': 'Coincidencia parcial',
+    'related': 'Relacionada',
+}
 
 
 # ============================================================================
@@ -613,15 +646,35 @@ def load_gsc_data(
         )
 
 
+def _detect_csv_separator(file_path: Path, encoding: str = 'utf-8') -> str:
+    """Detecta el separador del CSV (coma o punto y coma)."""
+    try:
+        with open(file_path, 'r', encoding=encoding) as f:
+            first_line = f.readline()
+            # Contar ocurrencias de cada separador
+            semicolons = first_line.count(';')
+            commas = first_line.count(',')
+            return ';' if semicolons > commas else ','
+    except Exception:
+        return ','  # Default a coma
+
+
 def _load_gsc_with_pandas(
     file_path: Path,
     encoding: str
 ) -> Dict[str, Any]:
     """Carga GSC usando pandas (más eficiente)."""
-    df = pd.read_csv(file_path, encoding=encoding)
+    # Detectar separador automáticamente
+    separator = _detect_csv_separator(file_path, encoding)
+    
+    df = pd.read_csv(file_path, encoding=encoding, sep=separator)
     
     # Normalizar nombres de columnas
     df.columns = df.columns.str.lower().str.strip()
+    
+    # Limpiar BOM si existe
+    if df.columns[0].startswith('\ufeff'):
+        df.columns = [col.replace('\ufeff', '') for col in df.columns]
     
     # Verificar columnas requeridas
     required = ['query']
@@ -659,12 +712,17 @@ def _load_gsc_with_csv(
     """Carga GSC usando módulo csv estándar."""
     rows = []
     
+    # Detectar separador
+    separator = _detect_csv_separator(file_path, encoding)
+    
     with open(file_path, 'r', encoding=encoding) as f:
-        reader = csv.DictReader(f)
+        # Usar el separador detectado
+        reader = csv.DictReader(f, delimiter=separator)
         
         # Normalizar nombres de columnas
         if reader.fieldnames:
-            fieldnames = [col.lower().strip() for col in reader.fieldnames]
+            # Limpiar BOM y espacios
+            fieldnames = [col.lower().strip().replace('\ufeff', '') for col in reader.fieldnames]
         else:
             raise GSCParseError("Archivo CSV sin cabeceras")
         
@@ -1174,6 +1232,28 @@ def is_gsc_data_stale(max_days: int = GSC_DATA_STALE_DAYS) -> bool:
     return age > max_days
 
 
+def get_recommended_update_date() -> str:
+    """
+    Calcula la fecha recomendada para la próxima actualización del dataset.
+    
+    Returns:
+        Fecha formateada como string (ej: "15 Feb 2025")
+    """
+    # La próxima actualización debería ser DATASET_END_DATE + GSC_DATA_STALE_DAYS
+    next_update = DATASET_END_DATE + timedelta(days=GSC_DATA_STALE_DAYS)
+    
+    # Si ya pasó, recomendar "lo antes posible"
+    if next_update < datetime.now():
+        return "Lo antes posible"
+    
+    # Formatear fecha
+    months_es = {
+        1: 'Ene', 2: 'Feb', 3: 'Mar', 4: 'Abr', 5: 'May', 6: 'Jun',
+        7: 'Jul', 8: 'Ago', 9: 'Sep', 10: 'Oct', 11: 'Nov', 12: 'Dic'
+    }
+    return f"{next_update.day} {months_es[next_update.month]} {next_update.year}"
+
+
 # ============================================================================
 # ANÁLISIS DE CANIBALIZACIÓN
 # ============================================================================
@@ -1398,6 +1478,296 @@ def get_cannibalization_summary(keyword: str) -> Dict[str, Any]:
 
 
 # ============================================================================
+# CARGA DE CSV DE KEYWORDS (FORMATO ESPECÍFICO)
+# ============================================================================
+
+# Cache para el CSV de keywords
+_gsc_keywords_cache: Optional[List[Dict[str, Any]]] = None
+_gsc_keywords_cache_time: Optional[datetime] = None
+
+
+def load_gsc_keywords_csv(
+    file_path: Optional[Union[str, Path]] = None,
+    force_reload: bool = False
+) -> List[Dict[str, Any]]:
+    """
+    Carga el CSV de keywords de GSC con formato específico.
+    
+    Formato esperado del CSV (separador `;`):
+    url;keyword;position;impressions;clicks;ctr;last_updated
+    
+    Args:
+        file_path: Ruta al archivo CSV. Si no se especifica, busca 'gsc_keywords.csv'
+        force_reload: Si True, recarga el archivo aunque esté en caché
+    
+    Returns:
+        Lista de diccionarios con los datos del CSV
+    """
+    global _gsc_keywords_cache, _gsc_keywords_cache_time
+    
+    # Usar caché si está disponible y no ha pasado mucho tiempo
+    if not force_reload and _gsc_keywords_cache is not None:
+        if _gsc_keywords_cache_time:
+            age = (datetime.now() - _gsc_keywords_cache_time).total_seconds()
+            if age < 3600:  # 1 hora de caché
+                return _gsc_keywords_cache
+    
+    # Buscar archivo
+    if file_path:
+        csv_path = Path(file_path)
+    else:
+        # Buscar en ubicaciones comunes
+        possible_paths = [
+            Path("./data/gsc_keywords.csv"),
+            Path("./gsc_keywords.csv"),
+            Path("data/gsc_keywords.csv"),
+            GSC_DATA_FILE.parent / "gsc_keywords.csv" if GSC_DATA_FILE else None,
+        ]
+        csv_path = None
+        for p in possible_paths:
+            if p and p.exists():
+                csv_path = p
+                break
+    
+    if not csv_path or not csv_path.exists():
+        logger.warning(f"Archivo gsc_keywords.csv no encontrado")
+        return []
+    
+    try:
+        rows = []
+        separator = _detect_csv_separator(csv_path, 'utf-8')
+        
+        with open(csv_path, 'r', encoding='utf-8-sig') as f:  # utf-8-sig maneja BOM
+            reader = csv.DictReader(f, delimiter=separator)
+            
+            for row in reader:
+                # Normalizar claves
+                normalized = {}
+                for key, value in row.items():
+                    norm_key = key.lower().strip().replace('\ufeff', '')
+                    
+                    if norm_key in ['clicks', 'impressions']:
+                        try:
+                            normalized[norm_key] = int(float(value)) if value else 0
+                        except (ValueError, TypeError):
+                            normalized[norm_key] = 0
+                    elif norm_key in ['position', 'ctr']:
+                        try:
+                            normalized[norm_key] = float(value) if value else 0.0
+                        except (ValueError, TypeError):
+                            normalized[norm_key] = 0.0
+                    else:
+                        normalized[norm_key] = value.strip() if value else ''
+                
+                rows.append(normalized)
+        
+        # Actualizar caché
+        _gsc_keywords_cache = rows
+        _gsc_keywords_cache_time = datetime.now()
+        
+        logger.info(f"Cargadas {len(rows)} filas de gsc_keywords.csv")
+        return rows
+        
+    except Exception as e:
+        logger.error(f"Error cargando gsc_keywords.csv: {e}")
+        return []
+
+
+def search_existing_content(
+    keyword: str,
+    min_impressions: int = 0,
+    max_results: int = 10
+) -> List[Dict[str, Any]]:
+    """
+    Busca URLs que ya tienen contenido posicionando para una keyword.
+    
+    Busca coincidencias en la columna 'keyword' del CSV, que representa
+    la top query que más clics generó para cada URL.
+    
+    Args:
+        keyword: Keyword a buscar
+        min_impressions: Mínimo de impresiones para incluir
+        max_results: Máximo de resultados
+    
+    Returns:
+        Lista de URLs con métricas ordenadas por clicks
+    """
+    if not keyword or not keyword.strip():
+        return []
+    
+    keyword_lower = keyword.strip().lower()
+    keyword_words = set(keyword_lower.split())
+    
+    # Cargar datos
+    data = load_gsc_keywords_csv()
+    if not data:
+        return []
+    
+    results = []
+    
+    for row in data:
+        row_keyword = row.get('keyword', '').lower()
+        impressions = row.get('impressions', 0)
+        
+        # Filtrar por impresiones mínimas
+        if impressions < min_impressions:
+            continue
+        
+        # Buscar coincidencia
+        # 1. Coincidencia exacta
+        # 2. La keyword buscada está contenida en la keyword del CSV
+        # 3. Palabras en común
+        row_words = set(row_keyword.split())
+        common_words = keyword_words.intersection(row_words)
+        
+        match_score = 0
+        if keyword_lower == row_keyword:
+            match_score = 100  # Coincidencia exacta
+        elif keyword_lower in row_keyword:
+            match_score = 80  # Contenida
+        elif row_keyword in keyword_lower:
+            match_score = 70  # Inversa
+        elif len(common_words) >= 2:
+            match_score = 50 + (len(common_words) * 5)  # Múltiples palabras comunes
+        elif len(common_words) == 1 and len(keyword_words) <= 2:
+            match_score = 30  # Una palabra común (solo para keywords cortas)
+        
+        if match_score > 0:
+            results.append({
+                'url': row.get('url', ''),
+                'keyword': row.get('keyword', ''),
+                'clicks': row.get('clicks', 0),
+                'impressions': impressions,
+                'position': row.get('position', 0),
+                'ctr': row.get('ctr', 0),
+                'match_score': match_score,
+                'last_updated': row.get('last_updated', '')
+            })
+    
+    # Ordenar por score y clicks
+    results.sort(key=lambda x: (x['match_score'], x['clicks']), reverse=True)
+    
+    return results[:max_results]
+
+
+def get_content_coverage_summary(keyword: str) -> Dict[str, Any]:
+    """
+    Obtiene resumen de cobertura de contenido para una keyword.
+    
+    Args:
+        keyword: Keyword a analizar
+    
+    Returns:
+        Dict con resumen de cobertura
+    """
+    results = search_existing_content(keyword, min_impressions=0, max_results=20)
+    
+    if not results:
+        return {
+            'has_coverage': False,
+            'total_urls': 0,
+            'exact_match': None,
+            'partial_matches': [],
+            'total_clicks': 0,
+            'recommendation': 'No hay contenido existente. Puedes crear contenido nuevo para esta keyword.'
+        }
+    
+    # Separar coincidencias exactas de parciales
+    exact = [r for r in results if r['match_score'] >= 80]
+    partial = [r for r in results if 30 <= r['match_score'] < 80]
+    
+    total_clicks = sum(r['clicks'] for r in results)
+    best_url = results[0] if results else None
+    
+    # Generar recomendación
+    if exact:
+        if exact[0]['clicks'] > 50:
+            recommendation = f"⚠️ Ya existe contenido bien posicionado para esta keyword en {exact[0]['url'][:50]}... Considera actualizar ese contenido."
+        else:
+            recommendation = f"Existe contenido para esta keyword pero con pocos clicks ({exact[0]['clicks']}). Podrías mejorarlo o crear contenido complementario."
+    elif partial:
+        recommendation = f"Se encontraron {len(partial)} URLs con contenido relacionado. Revisa si cubren la intención de búsqueda antes de crear contenido nuevo."
+    else:
+        recommendation = "No hay contenido existente. Puedes crear contenido nuevo para esta keyword."
+    
+    return {
+        'has_coverage': len(exact) > 0 or len(partial) > 0,
+        'total_urls': len(results),
+        'exact_match': exact[0] if exact else None,
+        'partial_matches': partial[:5],
+        'total_clicks': total_clicks,
+        'best_url': best_url,
+        'recommendation': recommendation
+    }
+
+
+# ============================================================================
+# FUNCIONES DE COMPATIBILIDAD (requeridas por utils/__init__.py)
+# ============================================================================
+
+def get_dataset_age() -> Dict[str, Any]:
+    """
+    Obtiene información sobre la antigüedad del dataset GSC.
+    
+    Formato esperado por ui/gsc_section.py
+    
+    Returns:
+        Dict con:
+        - is_critical: bool - Si los datos son críticamente viejos (>60 días)
+        - needs_update: bool - Si los datos necesitan actualización (>30 días)
+        - warning_message: str - Mensaje de advertencia
+        - dataset_period: str - Período del dataset (ej: "1 Ene - 31 Ene 2025")
+        - days_since_end: int - Días desde el fin del dataset
+    """
+    now = datetime.now()
+    days_since_end = (now - DATASET_END_DATE).days
+    
+    # Determinar niveles
+    is_critical = days_since_end > 60
+    needs_update = days_since_end > 30
+    
+    # Generar mensaje
+    if is_critical:
+        warning_message = f"🔴 **CRÍTICO**: Los datos tienen {days_since_end} días de antigüedad. Actualiza el dataset urgentemente."
+    elif needs_update:
+        warning_message = f"🟡 **ADVERTENCIA**: Los datos tienen {days_since_end} días. Considera actualizar el dataset."
+    else:
+        warning_message = f"✅ Los datos están actualizados ({days_since_end} días de antigüedad)."
+    
+    # Formatear período
+    months_es = {
+        1: 'Ene', 2: 'Feb', 3: 'Mar', 4: 'Abr', 5: 'May', 6: 'Jun',
+        7: 'Jul', 8: 'Ago', 9: 'Sep', 10: 'Oct', 11: 'Nov', 12: 'Dic'
+    }
+    start_str = f"{DATASET_START_DATE.day} {months_es[DATASET_START_DATE.month]}"
+    end_str = f"{DATASET_END_DATE.day} {months_es[DATASET_END_DATE.month]} {DATASET_END_DATE.year}"
+    dataset_period = f"{start_str} - {end_str}"
+    
+    return {
+        'is_critical': is_critical,
+        'needs_update': needs_update,
+        'warning_message': warning_message,
+        'dataset_period': dataset_period,
+        'days_since_end': days_since_end,
+    }
+
+
+def analyze_keyword_coverage(keyword: str) -> Dict[str, Any]:
+    """
+    Analiza la cobertura de una keyword en el contenido existente.
+    
+    Wrapper de get_content_coverage_summary() para compatibilidad con utils/__init__.py
+    
+    Args:
+        keyword: Keyword a analizar
+    
+    Returns:
+        Dict con análisis de cobertura
+    """
+    return get_content_coverage_summary(keyword)
+
+
+# ============================================================================
 # EXPORTS
 # ============================================================================
 
@@ -1424,6 +1794,7 @@ __all__ = [
     
     # Carga de datos
     'load_gsc_data',
+    'load_gsc_keywords_csv',
     
     # Análisis
     'get_keywords_for_url',
@@ -1452,8 +1823,26 @@ __all__ = [
     'check_cannibalization',
     'get_cannibalization_summary',
     
+    # Búsqueda de contenido existente
+    'search_existing_content',
+    'get_content_coverage_summary',
+    
+    # Compatibilidad con utils/__init__.py
+    'get_dataset_age',
+    'analyze_keyword_coverage',
+    
     # Constantes
     'DEFAULT_CACHE_TTL',
     'DEFAULT_CACHE_MAX_SIZE',
     'GSC_DATA_STALE_DAYS',
+    
+    # Constantes para ui/gsc_section.py
+    'RECOMMENDATION_MESSAGES',
+    'RISK_LEVEL_COLORS',
+    'MATCH_TYPE_DESCRIPTIONS',
+    'DATASET_START_DATE',
+    'DATASET_END_DATE',
+    
+    # Función de fecha recomendada
+    'get_recommended_update_date',
 ]
