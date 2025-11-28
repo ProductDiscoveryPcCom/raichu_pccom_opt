@@ -1,10 +1,11 @@
+# -*- coding: utf-8 -*-
 """
 UI Inputs - PcComponentes Content Generator
-Versión 4.4.0
+Versión 4.5.0
 
 Componentes de entrada para la interfaz Streamlit.
 Incluye: validación, anchor text, preguntas guía, producto alternativo,
-fecha GSC, análisis de canibalización.
+fecha GSC, análisis de canibalización, campo HTML para reescritura.
 
 Autor: PcComponentes - Product Discovery & Content
 """
@@ -25,7 +26,7 @@ logger = logging.getLogger(__name__)
 # CONSTANTES
 # ============================================================================
 
-__version__ = "4.4.0"
+__version__ = "4.5.0"
 
 DEFAULT_CONTENT_LENGTH = 1500
 MIN_CONTENT_LENGTH = 500
@@ -58,13 +59,13 @@ ERROR_MESSAGES = {
     'url_not_pccomponentes': 'La URL debe ser de PcComponentes',
     'length_out_of_range': f'La longitud debe estar entre {MIN_CONTENT_LENGTH} y {MAX_CONTENT_LENGTH}',
     'anchor_too_long': f'El anchor text no puede exceder {MAX_ANCHOR_LENGTH} caracteres',
+    'html_empty': 'El contenido HTML es obligatorio para reescritura',
 }
 
 # ============================================================================
 # IMPORTS CON FALLBACKS ROBUSTOS
 # ============================================================================
 
-# Settings
 try:
     from config.settings import (
         DEFAULT_CONTENT_LENGTH as _DCL,
@@ -98,102 +99,95 @@ except ImportError:
     def get_arquetipo(code): return ARQUETIPOS.get(code)
     def get_arquetipo_names(): return {k: v['name'] for k, v in ARQUETIPOS.items()}
     def get_guiding_questions(code): return ARQUETIPOS.get(code, {}).get('guiding_questions', [])
-    def get_default_length(code): return ARQUETIPOS.get(code, {}).get('default_length', 1500)
+    def get_default_length(code): return ARQUETIPOS.get(code, {}).get('default_length', DEFAULT_CONTENT_LENGTH)
     def get_length_range(code): 
         arq = ARQUETIPOS.get(code, {})
-        return (arq.get('min_length', 500), arq.get('max_length', 3000))
+        return (arq.get('min_length', MIN_CONTENT_LENGTH), arq.get('max_length', MAX_CONTENT_LENGTH))
 
-# State manager
-def _save_form_data_fallback(data):
-    for k, v in data.items():
-        st.session_state[k] = v
-
-def _get_form_value_fallback(key, default=None):
-    return st.session_state.get(key, default)
-
-save_form_data = _save_form_data_fallback
-get_form_value = _get_form_value_fallback
-
+# GSC Utils - para verificación de canibalización
 try:
-    from utils.state_manager import save_form_data, get_form_value
+    from utils.gsc_utils import (
+        get_gsc_data_date,
+        is_gsc_data_stale,
+        check_cannibalization,
+        get_cannibalization_summary,
+        load_gsc_keywords_csv,
+        search_existing_content,
+        get_content_coverage_summary,
+    )
+    _gsc_available = True
 except ImportError:
-    pass
+    _gsc_available = False
+    def get_gsc_data_date(): return None
+    def is_gsc_data_stale(days=7): return True
+    def check_cannibalization(kw, **kwargs): return []
+    def get_cannibalization_summary(kw): return {'has_risk': False, 'urls': [], 'recommendation': ''}
+    def load_gsc_keywords_csv(): return []
+    def search_existing_content(kw, **kwargs): return []
+    def get_content_coverage_summary(kw): return {'has_coverage': False, 'recommendation': ''}
 
-# GSC utils
-def _get_gsc_data_date_fallback():
-    return st.session_state.get('gsc_data_date')
-
-def _check_cannibalization_fallback(keyword):
-    return []
-
-get_gsc_data_date = _get_gsc_data_date_fallback
-check_cannibalization = _check_cannibalization_fallback
-
-try:
-    from utils.gsc_utils import get_gsc_data_date, check_cannibalization
-except ImportError:
-    pass
 
 # ============================================================================
-# EXCEPCIONES
+# CLASES DE DATOS
 # ============================================================================
 
 class InputValidationError(Exception):
-    def __init__(self, message: str, field: str = '', value: Any = None):
-        super().__init__(message)
-        self.message = message
-        self.field = field
-        self.value = value
+    """Error de validación de input."""
+    pass
 
 class KeywordValidationError(InputValidationError):
-    def __init__(self, message: str, value: str = None):
-        super().__init__(message, field='keyword', value=value)
+    """Error de validación de keyword."""
+    pass
 
 class URLValidationError(InputValidationError):
-    def __init__(self, message: str, value: str = None):
-        super().__init__(message, field='url', value=value)
+    """Error de validación de URL."""
+    pass
 
 class LengthValidationError(InputValidationError):
-    def __init__(self, message: str, value: int = None):
-        super().__init__(message, field='length', value=value)
+    """Error de validación de longitud."""
+    pass
 
 class LinksValidationError(InputValidationError):
-    def __init__(self, message: str, value: Any = None, link_type: str = 'links'):
-        super().__init__(message, field=link_type, value=value)
+    """Error de validación de enlaces."""
+    pass
 
 class ArquetipoValidationError(InputValidationError):
-    def __init__(self, message: str, value: str = None):
-        super().__init__(message, field='arquetipo', value=value)
+    """Error de validación de arquetipo."""
+    pass
 
-# ============================================================================
-# DATA CLASSES
-# ============================================================================
 
 class InputMode(Enum):
-    NEW_CONTENT = "new"
+    """Modos de generación de contenido."""
+    NEW = "new"
     REWRITE = "rewrite"
 
+
 class LinkType(Enum):
+    """Tipos de enlaces."""
     INTERNAL = "internal"
     PDP = "pdp"
     EXTERNAL = "external"
 
+
 @dataclass
 class LinkWithAnchor:
-    """Enlace con su anchor text."""
+    """Enlace con anchor text personalizado."""
     url: str
     anchor: str = ""
     link_type: str = "internal"
 
+
 @dataclass
 class ValidationResult:
+    """Resultado de validación."""
     is_valid: bool
     value: Any
     error: Optional[str] = None
-    warnings: Optional[List[str]] = None
+
 
 @dataclass
 class FormData:
+    """Datos del formulario completo."""
     keyword: str
     pdp_url: Optional[str] = None
     target_length: int = DEFAULT_CONTENT_LENGTH
@@ -206,6 +200,7 @@ class FormData:
     guiding_answers: Optional[Dict[str, str]] = None
     alternative_product_url: Optional[str] = None
     alternative_product_name: Optional[str] = None
+
 
 # ============================================================================
 # FUNCIONES DE VALIDACIÓN
@@ -221,6 +216,7 @@ def validate_keyword(keyword: str) -> ValidationResult:
     if len(keyword) > MAX_KEYWORD_LENGTH:
         return ValidationResult(False, keyword, ERROR_MESSAGES['keyword_too_long'])
     return ValidationResult(True, keyword)
+
 
 def validate_url(url: str, require_pccomponentes: bool = False) -> ValidationResult:
     """Valida una URL."""
@@ -241,17 +237,30 @@ def validate_url(url: str, require_pccomponentes: bool = False) -> ValidationRes
             return ValidationResult(False, url, ERROR_MESSAGES['url_invalid'])
     return ValidationResult(True, url)
 
+
 def validate_length(length: int) -> ValidationResult:
     """Valida la longitud del contenido."""
     if length < MIN_CONTENT_LENGTH or length > MAX_CONTENT_LENGTH:
         return ValidationResult(False, length, ERROR_MESSAGES['length_out_of_range'])
     return ValidationResult(True, length)
 
+
 def validate_arquetipo(arquetipo: str) -> ValidationResult:
     """Valida el código de arquetipo."""
     if arquetipo not in ARQUETIPOS:
         return ValidationResult(False, arquetipo, 'Arquetipo inválido')
     return ValidationResult(True, arquetipo)
+
+
+def validate_html_content(html: str) -> ValidationResult:
+    """Valida contenido HTML para reescritura."""
+    if not html or not html.strip():
+        return ValidationResult(False, '', ERROR_MESSAGES['html_empty'])
+    html = html.strip()
+    if len(html) < 100:
+        return ValidationResult(False, html, 'El contenido HTML es demasiado corto (mínimo 100 caracteres)')
+    return ValidationResult(True, html)
+
 
 def validate_links_list(links_text: str, link_type: str = 'internal', max_links: int = MAX_LINKS_PER_TYPE) -> ValidationResult:
     """Valida una lista de enlaces."""
@@ -264,6 +273,7 @@ def validate_links_list(links_text: str, link_type: str = 'internal', max_links:
             valid_links.append(line)
     return ValidationResult(True, valid_links)
 
+
 def validate_competitor_urls(urls_text: str) -> ValidationResult:
     """Valida URLs de competidores (filtra PcComponentes)."""
     result = validate_links_list(urls_text, 'competitor', MAX_COMPETITORS)
@@ -271,6 +281,29 @@ def validate_competitor_urls(urls_text: str) -> ValidationResult:
         filtered = [u for u in result.value if not any(pcc in urlparse(u).netloc.lower() for pcc in PCCOMPONENTES_DOMAINS)]
         return ValidationResult(True, filtered)
     return result
+
+
+# ============================================================================
+# FUNCIONES DE ESTADO
+# ============================================================================
+
+def get_form_value(key: str, default: Any = None) -> Any:
+    """Obtiene valor del formulario desde session_state."""
+    form_data = st.session_state.get('form_data', {})
+    return form_data.get(key, default)
+
+
+def save_form_data(data: Dict[str, Any]) -> None:
+    """Guarda datos en session_state."""
+    if 'form_data' not in st.session_state:
+        st.session_state.form_data = {}
+    st.session_state.form_data.update(data)
+
+
+def clear_form_data() -> None:
+    """Limpia datos del formulario."""
+    st.session_state.form_data = {}
+
 
 # ============================================================================
 # COMPONENTES UI: BÁSICOS
@@ -307,6 +340,7 @@ def render_keyword_input(
         return "", "La keyword es obligatoria"
     return "", None
 
+
 def render_url_input(
     key: str = "url_input",
     default_value: str = "",
@@ -333,6 +367,7 @@ def render_url_input(
         return "", "La URL es obligatoria"
     return "", None
 
+
 def render_length_slider(
     key: str = "length_slider",
     default_value: int = None,
@@ -349,164 +384,150 @@ def render_length_slider(
         except Exception:
             pass
     
-    if default_value is None:
-        default_value = default_len
+    if default_value is not None:
+        default_len = default_value
     
-    saved_value = get_form_value('target_length', default_value)
-    saved_value = max(min_len, min(max_len, saved_value))
+    saved_value = get_form_value('target_length', default_len)
+    saved_value = max(min_len, min(saved_value, max_len))
     
     length = st.slider(
-        "📏 Longitud (palabras)",
-        min_len, max_len, saved_value, 50,
-        key=key,
-        help=f"Rango recomendado: {min_len}-{max_len} palabras"
+        label="📏 Longitud objetivo (palabras)",
+        min_value=min_len,
+        max_value=max_len,
+        value=saved_value,
+        step=100,
+        key=key
     )
     save_form_data({'target_length': length})
     return length
 
-def render_arquetipo_selector(key: str = "arquetipo_selector", default_value: str = "ARQ-1") -> str:
+
+def render_arquetipo_selector(key: str = "arquetipo_selector") -> str:
     """Renderiza selector de arquetipo."""
-    saved_value = get_form_value('arquetipo', default_value)
-    arquetipo_list = list(ARQUETIPOS.keys())
+    saved_value = get_form_value('arquetipo', 'ARQ-1')
+    names = get_arquetipo_names()
+    options = list(names.keys())
     
     try:
-        default_index = arquetipo_list.index(saved_value)
+        default_index = options.index(saved_value)
     except ValueError:
         default_index = 0
     
-    def format_arq(code):
-        arq = ARQUETIPOS.get(code, {})
-        name = arq.get('name', code)
-        return f"{code} - {name}"
-    
     arquetipo = st.selectbox(
-        "📋 Tipo de Contenido",
-        arquetipo_list,
-        default_index,
-        format_func=format_arq,
+        label="📋 Tipo de Contenido (Arquetipo)",
+        options=options,
+        format_func=lambda x: f"{x}: {names.get(x, x)}",
+        index=default_index,
         key=key
     )
-    
-    arq = ARQUETIPOS.get(arquetipo, {})
-    if arq.get('description'):
-        st.caption(f"ℹ️ {arq['description']}")
-    
     save_form_data({'arquetipo': arquetipo})
     return arquetipo
 
+
 def render_mode_selector(key: str = "mode_selector") -> str:
-    """Renderiza selector de modo."""
+    """Renderiza selector de modo (nuevo/reescritura)."""
     saved_mode = get_form_value('mode', 'new')
     mode = st.radio(
-        "Modo de Generación",
-        ['new', 'rewrite'],
+        "🔄 Modo de Generación",
+        options=['new', 'rewrite'],
+        format_func=lambda x: '✨ Nuevo Contenido' if x == 'new' else '📝 Reescritura',
         index=0 if saved_mode == 'new' else 1,
-        format_func=lambda x: "🆕 Nuevo Contenido" if x == 'new' else "✏️ Reescritura",
         key=key,
         horizontal=True
     )
     save_form_data({'mode': mode})
     return mode
 
-def render_additional_instructions(key: str = "additional_instructions", default_value: str = "") -> str:
-    """Renderiza textarea para instrucciones adicionales."""
-    saved = get_form_value('additional_instructions', default_value)
-    instructions = st.text_area(
-        "📝 Instrucciones Adicionales",
-        value=saved,
-        key=key,
-        height=80,
-        placeholder="Ej: Enfocarse en gamers principiantes..."
-    )
-    if instructions:
-        instructions = instructions.strip()[:1000]
-        save_form_data({'additional_instructions': instructions})
-    return instructions or ""
 
-def render_competitor_urls_input(key: str = "competitor_urls") -> Tuple[List[str], Optional[str]]:
-    """Renderiza input de URLs de competidores."""
-    urls_text = st.text_area(
-        "🏆 URLs de Competidores",
+# ============================================================================
+# COMPONENTES UI: AVANZADOS
+# ============================================================================
+
+def render_html_input(key: str = "html_input") -> Tuple[str, Optional[str]]:
+    """Renderiza área de texto para pegar HTML de artículo a reescribir."""
+    st.markdown("##### 📄 Contenido HTML a Reescribir")
+    st.caption("Pega el código HTML del artículo que deseas reescribir")
+    
+    saved_value = get_form_value('html_content', '')
+    html_content = st.text_area(
+        label="Código HTML",
+        value=saved_value,
+        height=200,
         key=key,
-        height=120,
-        placeholder="https://competidor1.com/articulo\nhttps://..."
+        placeholder="<article>\n  <h1>Título del artículo...</h1>\n  <p>Contenido...</p>\n</article>",
+        label_visibility="collapsed"
     )
-    if urls_text:
-        result = validate_competitor_urls(urls_text)
+    
+    if html_content:
+        result = validate_html_content(html_content)
+        if not result.is_valid:
+            st.error(f"❌ {result.error}")
+            return html_content, result.error
+        save_form_data({'html_content': result.value})
+        
+        # Mostrar preview
+        word_count = len(html_content.split())
+        char_count = len(html_content)
+        st.caption(f"📊 {word_count} palabras · {char_count} caracteres")
+        
         return result.value, None
-    return [], None
+    else:
+        return "", "El contenido HTML es obligatorio para reescritura"
 
-# ============================================================================
-# COMPONENTES UI: NUEVAS FUNCIONALIDADES
-# ============================================================================
 
 def render_links_with_anchors(
     key_prefix: str = "links",
-    label: str = "🔗 Enlaces",
+    label: str = "Enlaces",
     link_type: str = "internal",
-    max_links: int = 5,
-    help_text: str = "Añade enlaces con su texto ancla"
+    max_links: int = 10
 ) -> List[LinkWithAnchor]:
-    """
-    Renderiza inputs para enlaces con anchor text editable.
-    
-    Cada enlace tiene:
-    - Campo URL (validado)
-    - Campo Anchor text (opcional)
-    - Botón eliminar (excepto el primero)
-    
-    Args:
-        key_prefix: Prefijo para las keys de session_state
-        label: Etiqueta del bloque
-        link_type: Tipo de enlace (internal, pdp, external)
-        max_links: Máximo de enlaces permitidos
-        help_text: Texto de ayuda
-    
-    Returns:
-        Lista de LinkWithAnchor con los enlaces válidos
-    """
-    st.markdown(f"**{label}**")
-    st.caption(help_text)
-    
-    # Estado: número de filas de enlaces
+    """Renderiza UI dinámica para enlaces con anchor text editable."""
     count_key = f"{key_prefix}_count"
+    delete_key = f"{key_prefix}_delete_idx"
+    
+    # Inicializar estado
     if count_key not in st.session_state:
         st.session_state[count_key] = 1
+    if delete_key not in st.session_state:
+        st.session_state[delete_key] = None
     
-    # Estado: índice a eliminar (para manejar eliminación de forma segura)
-    delete_key = f"{key_prefix}_delete_idx"
-    if delete_key in st.session_state and st.session_state[delete_key] is not None:
+    current_count = st.session_state[count_key]
+    
+    # Procesar eliminación pendiente
+    if st.session_state[delete_key] is not None:
         idx_to_delete = st.session_state[delete_key]
-        current_count = st.session_state[count_key]
+        if 0 <= idx_to_delete < current_count:
+            # Shift valores hacia arriba
+            for j in range(idx_to_delete, current_count - 1):
+                next_url = st.session_state.get(f"{key_prefix}_url_{j+1}", "")
+                next_anchor = st.session_state.get(f"{key_prefix}_anchor_{j+1}", "")
+                st.session_state[f"{key_prefix}_url_{j}"] = next_url
+                st.session_state[f"{key_prefix}_anchor_{j}"] = next_anchor
+            
+            # Limpiar última fila
+            last_idx = current_count - 1
+            if f"{key_prefix}_url_{last_idx}" in st.session_state:
+                del st.session_state[f"{key_prefix}_url_{last_idx}"]
+            if f"{key_prefix}_anchor_{last_idx}" in st.session_state:
+                del st.session_state[f"{key_prefix}_anchor_{last_idx}"]
+            
+            # Decrementar contador
+            st.session_state[count_key] = max(1, current_count - 1)
         
-        # Shift de valores hacia arriba
-        for j in range(idx_to_delete, current_count - 1):
-            next_url = st.session_state.get(f"{key_prefix}_url_{j+1}", "")
-            next_anchor = st.session_state.get(f"{key_prefix}_anchor_{j+1}", "")
-            st.session_state[f"{key_prefix}_url_{j}"] = next_url
-            st.session_state[f"{key_prefix}_anchor_{j}"] = next_anchor
-        
-        # Limpiar última fila (ya movida)
-        last_idx = current_count - 1
-        if f"{key_prefix}_url_{last_idx}" in st.session_state:
-            del st.session_state[f"{key_prefix}_url_{last_idx}"]
-        if f"{key_prefix}_anchor_{last_idx}" in st.session_state:
-            del st.session_state[f"{key_prefix}_anchor_{last_idx}"]
-        
-        # Decrementar contador
-        st.session_state[count_key] = max(1, current_count - 1)
         st.session_state[delete_key] = None
         st.rerun()
     
-    links_data = []
     current_count = st.session_state[count_key]
+    links = []
+    
+    st.markdown(f"**{label}** (máx. {max_links})")
     
     for i in range(current_count):
-        col1, col2, col3 = st.columns([3, 2, 0.5])
+        col1, col2, col3 = st.columns([5, 4, 1])
         
         with col1:
             url = st.text_input(
-                f"URL {i+1}",
+                label=f"URL {i+1}",
                 key=f"{key_prefix}_url_{i}",
                 placeholder="https://www.pccomponentes.com/...",
                 label_visibility="collapsed"
@@ -514,150 +535,214 @@ def render_links_with_anchors(
         
         with col2:
             anchor = st.text_input(
-                f"Anchor {i+1}",
+                label=f"Anchor {i+1}",
                 key=f"{key_prefix}_anchor_{i}",
-                placeholder="Texto ancla descriptivo",
+                placeholder="Texto del enlace (anchor)",
                 label_visibility="collapsed"
             )
         
         with col3:
-            # Solo mostrar botón eliminar si no es el primer enlace
-            if i > 0:
-                if st.button("🗑️", key=f"{key_prefix}_del_{i}", help="Eliminar enlace"):
+            if current_count > 1:
+                if st.button("🗑️", key=f"{key_prefix}_del_{i}", help="Eliminar"):
                     st.session_state[delete_key] = i
                     st.rerun()
-            else:
-                st.write("")  # Espacio vacío para alinear
         
-        # Validar y añadir enlace si URL es válida
         if url and url.strip():
-            url_result = validate_url(url)
-            if url_result.is_valid and url_result.value:
-                links_data.append(LinkWithAnchor(
-                    url=url_result.value,
+            validated = validate_url(url.strip())
+            if validated.is_valid:
+                links.append(LinkWithAnchor(
+                    url=validated.value,
                     anchor=anchor.strip() if anchor else "",
                     link_type=link_type
                 ))
     
-    # Botón para añadir más enlaces
+    # Botón añadir
     if current_count < max_links:
         if st.button(f"➕ Añadir enlace", key=f"{key_prefix}_add"):
             st.session_state[count_key] = current_count + 1
             st.rerun()
     
-    return links_data
+    return links
+
 
 def render_guiding_questions(arquetipo_code: str, key_prefix: str = "guiding") -> Dict[str, str]:
-    """Renderiza preguntas guía del arquetipo en expander."""
+    """Renderiza preguntas guía del arquetipo en un expander."""
     questions = get_guiding_questions(arquetipo_code)
     
     if not questions:
         return {}
     
-    answers = {}
-    answered_count = 0
+    arq = get_arquetipo(arquetipo_code)
+    arq_name = arq.get('name', arquetipo_code) if arq else arquetipo_code
     
-    with st.expander(f"💡 Preguntas Guía ({len(questions)} preguntas)", expanded=False):
-        st.caption("Responde para añadir contexto al contenido (opcional pero recomendado)")
+    with st.expander(f"💡 Briefing: {arq_name}", expanded=False):
+        st.caption("Responde estas preguntas para guiar mejor la generación del contenido")
         
+        answers = {}
         for i, question in enumerate(questions):
-            answer_key = f"{key_prefix}_q{i}"
-            saved_answer = get_form_value(answer_key, "")
-            
             answer = st.text_area(
-                question,
-                value=saved_answer,
-                key=answer_key,
-                height=60,
-                placeholder="Tu respuesta..."
+                label=question,
+                key=f"{key_prefix}_{i}",
+                height=80,
+                placeholder="Tu respuesta...",
+                label_visibility="visible"
             )
-            
             if answer and answer.strip():
                 answers[question] = answer.strip()
-                save_form_data({answer_key: answer.strip()})
-                answered_count += 1
         
-        if answered_count > 0:
-            st.success(f"✅ {answered_count}/{len(questions)} preguntas respondidas")
-    
-    return answers
+        return answers
 
-def render_gsc_date_warning() -> Optional[datetime]:
+
+def render_gsc_date_warning() -> None:
     """Muestra aviso si los datos de GSC están desactualizados."""
-    try:
-        gsc_date = get_gsc_data_date()
-        
-        if gsc_date:
-            days_old = (datetime.now() - gsc_date).days
-            
-            if days_old > GSC_DATA_WARNING_DAYS:
-                st.warning(
-                    f"⚠️ **Datos GSC desactualizados** "
-                    f"({gsc_date.strftime('%d/%m/%Y')} - hace {days_old} días)"
-                )
-            else:
-                st.info(f"📊 Datos GSC: {gsc_date.strftime('%d/%m/%Y')} (hace {days_old} días)")
-            
-            return gsc_date
-        return None
-    except Exception as e:
-        logger.debug(f"No se pudo obtener fecha GSC: {e}")
-        return None
-
-def _render_cannibalization_check(keyword: str) -> None:
-    """Muestra alerta si hay posible canibalización."""
-    if not keyword:
+    if not _gsc_available:
         return
     
     try:
-        existing = check_cannibalization(keyword)
-        
-        if existing:
-            with st.expander(f"⚠️ Posible canibalización ({len(existing)} URLs)", expanded=True):
-                st.markdown(f"URLs existentes que posicionan para '{keyword}':")
-                
-                for item in existing[:5]:
-                    url = item.get('url', '')
-                    pos = item.get('position', 0)
-                    clicks = item.get('clicks', 0)
-                    
-                    st.markdown(f"- `{url[:60]}...` (Pos: {pos:.1f}, Clicks: {clicks})")
-                
-                st.info("💡 Considera actualizar contenido existente en lugar de crear nuevo")
+        gsc_date = get_gsc_data_date()
+        if gsc_date:
+            if is_gsc_data_stale(GSC_DATA_WARNING_DAYS):
+                days_old = (datetime.now() - gsc_date).days
+                st.warning(
+                    f"⚠️ Datos GSC de hace {days_old} días ({gsc_date.strftime('%d/%m/%Y')}). "
+                    f"Considera actualizar para mejor análisis.",
+                    icon="📅"
+                )
+            else:
+                st.caption(f"📅 Datos GSC: {gsc_date.strftime('%d/%m/%Y')}")
     except Exception:
         pass
 
-def render_alternative_product_input(key_prefix: str = "alt_product") -> Tuple[Optional[str], Optional[str]]:
-    """Renderiza input para producto alternativo."""
-    st.markdown("**🔄 Producto Alternativo**")
-    st.caption("Producto del catálogo para sugerir como alternativa")
+
+def _render_cannibalization_check(keyword: str) -> None:
+    """Renderiza check de canibalización/cobertura para una keyword."""
+    if not _gsc_available or not keyword:
+        return
     
-    col1, col2 = st.columns([2, 1])
+    try:
+        # Usar la nueva función que busca en el CSV de keywords
+        summary = get_content_coverage_summary(keyword)
+        
+        if summary.get('has_coverage'):
+            exact = summary.get('exact_match')
+            partial = summary.get('partial_matches', [])[:3]
+            total = summary.get('total_urls', 0)
+            
+            # Determinar color según gravedad
+            if exact:
+                bg_color = "#fff3cd"  # Amarillo - coincidencia exacta
+                border_color = "#ffc107"
+                icon = "⚠️"
+            else:
+                bg_color = "#d1ecf1"  # Azul claro - solo parciales
+                border_color = "#17a2b8"
+                icon = "ℹ️"
+            
+            with st.container():
+                st.markdown(
+                    f"""<div style="background-color:{bg_color};padding:10px;border-radius:5px;border-left:4px solid {border_color};margin:10px 0;">
+                    <strong>{icon} Contenido existente detectado</strong><br>
+                    <small>Se encontraron <b>{total}</b> URLs con contenido relacionado:</small>
+                    </div>""",
+                    unsafe_allow_html=True
+                )
+                
+                # Mostrar coincidencia exacta primero
+                if exact:
+                    url = exact.get('url', '')
+                    clicks = exact.get('clicks', 0)
+                    kw = exact.get('keyword', '')
+                    st.caption(f"🎯 **Coincidencia exacta:** [{url[:50]}...]({url})")
+                    st.caption(f"   Keyword: '{kw}' · {clicks} clicks")
+                
+                # Mostrar parciales
+                for url_data in partial:
+                    url = url_data.get('url', '')
+                    clicks = url_data.get('clicks', 0)
+                    kw = url_data.get('keyword', '')
+                    st.caption(f"• [{url[:50]}...]({url}) - '{kw}' · {clicks} clicks")
+                
+                recommendation = summary.get('recommendation', '')
+                if recommendation:
+                    st.info(f"💡 {recommendation}")
+    except Exception as e:
+        logger.debug(f"Error en check canibalización: {e}")
+
+
+def render_alternative_product_input(key_prefix: str = "alt_product") -> Tuple[str, str]:
+    """Renderiza inputs para producto alternativo."""
+    st.markdown("Sugiere un producto alternativo para mencionar en el contenido")
+    
+    col1, col2 = st.columns(2)
     
     with col1:
-        url = st.text_input(
-            "URL producto alternativo",
+        alt_url = st.text_input(
+            label="URL del producto alternativo",
             key=f"{key_prefix}_url",
-            placeholder="https://www.pccomponentes.com/producto",
-            label_visibility="collapsed"
+            placeholder="https://www.pccomponentes.com/producto-alternativo"
         )
     
     with col2:
-        name = st.text_input(
-            "Nombre",
+        alt_name = st.text_input(
+            label="Nombre del producto",
             key=f"{key_prefix}_name",
-            placeholder="Nombre producto",
-            label_visibility="collapsed"
+            placeholder="Ej: ASUS ROG Strix..."
         )
     
-    if url and url.strip():
-        result = validate_url(url, require_pccomponentes=True)
-        if not result.is_valid:
-            st.error(f"❌ {result.error}")
-            return None, None
-        return result.value, name.strip() if name else None
+    return alt_url.strip() if alt_url else "", alt_name.strip() if alt_name else ""
+
+
+def render_competitor_urls_input(key: str = "competitor_urls") -> Tuple[List[str], Optional[str]]:
+    """Renderiza input para URLs de competidores."""
+    st.markdown("##### 🏆 URLs de Competencia")
+    st.caption("Añade URLs de artículos competidores para análisis (máx. 5)")
     
-    return None, None
+    urls_text = st.text_area(
+        label="URLs de competidores",
+        key=key,
+        height=100,
+        placeholder="https://competidor1.com/articulo\nhttps://competidor2.com/articulo",
+        label_visibility="collapsed"
+    )
+    
+    if urls_text:
+        result = validate_competitor_urls(urls_text)
+        if result.value:
+            st.caption(f"✅ {len(result.value)} URLs válidas de competencia")
+        return result.value, None
+    return [], None
+
+
+def render_additional_instructions(key: str = "additional_instructions") -> str:
+    """Renderiza área de instrucciones adicionales."""
+    instructions = st.text_area(
+        label="Instrucciones adicionales para el generador",
+        key=key,
+        height=100,
+        placeholder="Ej: Enfócate en el rendimiento gaming, menciona la garantía extendida..."
+    )
+    return instructions.strip() if instructions else ""
+
+
+# ============================================================================
+# VALIDACIÓN DE ERRORES COMPACTA
+# ============================================================================
+
+def render_validation_errors(errors: List[str]) -> None:
+    """Renderiza errores de validación de forma compacta."""
+    if not errors:
+        return
+    
+    error_html = "<div style='background-color:#f8d7da;border:1px solid #f5c6cb;border-radius:5px;padding:10px;margin:10px 0;'>"
+    error_html += "<span style='color:#721c24;font-weight:bold;font-size:14px;'>⚠️ Corrige los siguientes errores:</span><ul style='margin:5px 0;padding-left:20px;color:#721c24;font-size:13px;'>"
+    
+    for e in errors:
+        error_html += f"<li>{e}</li>"
+    
+    error_html += "</ul></div>"
+    
+    st.markdown(error_html, unsafe_allow_html=True)
+
 
 # ============================================================================
 # FORMULARIO PRINCIPAL
@@ -666,6 +751,7 @@ def render_alternative_product_input(key_prefix: str = "alt_product") -> Tuple[O
 def render_main_form(mode: str = "new") -> Optional[FormData]:
     """Renderiza el formulario principal completo."""
     errors = []
+    
     st.markdown("### 📝 Configuración de Generación")
     
     # Fecha GSC
@@ -722,10 +808,9 @@ def render_main_form(mode: str = "new") -> Optional[FormData]:
     with st.expander("📝 Instrucciones Adicionales", expanded=False):
         additional_instructions = render_additional_instructions(key="main_instructions")
     
+    # Mostrar errores de forma compacta
     if errors:
-        st.error("### ❌ Corrige los siguientes errores:")
-        for e in errors:
-            st.markdown(f"- {e}")
+        render_validation_errors(errors)
         return None
     
     return FormData(
@@ -743,6 +828,7 @@ def render_main_form(mode: str = "new") -> Optional[FormData]:
         alternative_product_name=alt_name
     )
 
+
 # ============================================================================
 # FUNCIÓN PRINCIPAL PARA APP.PY
 # ============================================================================
@@ -751,8 +837,14 @@ def render_content_inputs() -> Tuple[bool, Dict[str, Any]]:
     """
     Renderiza inputs y retorna configuración.
     Esta es la función que app.py importa.
+    
+    NOTA: El selector de modo está en app.py (render_app_header), NO aquí.
+    Esta función solo maneja el modo 'new'. El modo 'rewrite' usa render_rewrite_section().
     """
-    mode = render_mode_selector(key="main_mode")
+    # El modo siempre es 'new' aquí - app.py maneja el routing
+    mode = 'new'
+    
+    # Formulario principal
     form_data = render_main_form(mode=mode)
     
     st.markdown("---")
@@ -800,92 +892,62 @@ def render_content_inputs() -> Tuple[bool, Dict[str, Any]]:
             'competitor_urls': form_data.competitor_urls or [],
             'internal_links': internal_links_fmt,
             'pdp_links': pdp_links_fmt,
-            'links': internal_links_fmt + pdp_links_fmt,
             'additional_instructions': form_data.additional_instructions or '',
-            'guiding_answers': form_data.guiding_answers or {},
-            'context_from_questions': context_from_questions,
-            'producto_alternativo': {
-                'url': form_data.alternative_product_url,
-                'name': form_data.alternative_product_name
+            'guiding_context': context_from_questions,
+            'alternative_product': {
+                'url': form_data.alternative_product_url or '',
+                'name': form_data.alternative_product_name or ''
             } if form_data.alternative_product_url else None,
-            'objetivo': '',
-            'keywords': [],
-            'context': context_from_questions,
-            'pdp_data': None,
         }
+        
         return True, config
     
     return False, {}
 
+
 # ============================================================================
-# UTILIDADES
+# UTILIDADES ADICIONALES
 # ============================================================================
 
-def clear_form_state() -> None:
-    """Limpia el estado del formulario."""
-    keys_to_clear = [
-        'keyword', 'pdp_url', 'target_length', 'arquetipo', 'mode',
-        'competitor_urls', 'additional_instructions'
-    ]
-    
-    for i in range(20):
-        keys_to_clear.append(f"main_guiding_q{i}")
-    
-    for prefix in ['main_internal', 'main_pdp']:
-        keys_to_clear.append(f"{prefix}_count")
-        for i in range(15):
-            keys_to_clear.append(f"{prefix}_url_{i}")
-            keys_to_clear.append(f"{prefix}_anchor_{i}")
-    
-    for key in keys_to_clear:
-        if key in st.session_state:
-            del st.session_state[key]
-
-def get_form_summary(form_data: FormData) -> Dict[str, Any]:
-    """Retorna resumen del formulario."""
-    summary = {
+def get_form_summary(form_data: FormData) -> Dict[str, str]:
+    """Genera resumen del formulario para mostrar."""
+    return {
         'Keyword': form_data.keyword,
+        'URL': form_data.pdp_url or 'No especificada',
         'Longitud': f"{form_data.target_length} palabras",
         'Arquetipo': form_data.arquetipo,
         'Modo': 'Nuevo' if form_data.mode == 'new' else 'Reescritura',
+        'Enlaces internos': str(len(form_data.internal_links or [])),
+        'Enlaces PDP': str(len(form_data.pdp_links or [])),
     }
-    
-    if form_data.internal_links:
-        summary['Enlaces internos'] = len(form_data.internal_links)
-    if form_data.pdp_links:
-        summary['Enlaces PDP'] = len(form_data.pdp_links)
-    if form_data.guiding_answers:
-        summary['Preguntas respondidas'] = len(form_data.guiding_answers)
-    if form_data.alternative_product_url:
-        summary['Producto alternativo'] = form_data.alternative_product_name or 'Sí'
-    
-    return summary
+
 
 # ============================================================================
 # EXPORTS
 # ============================================================================
 
 __all__ = [
+    # Versión
     '__version__',
     # Excepciones
     'InputValidationError', 'KeywordValidationError', 'URLValidationError',
     'LengthValidationError', 'LinksValidationError', 'ArquetipoValidationError',
-    # Clases
+    # Enums y clases
     'InputMode', 'LinkType', 'LinkWithAnchor', 'ValidationResult', 'FormData',
     # Validación
     'validate_keyword', 'validate_url', 'validate_length', 'validate_arquetipo',
-    'validate_links_list', 'validate_competitor_urls',
-    # Componentes básicos
+    'validate_html_content', 'validate_links_list', 'validate_competitor_urls',
+    # Estado
+    'get_form_value', 'save_form_data', 'clear_form_data',
+    # Componentes UI
     'render_keyword_input', 'render_url_input', 'render_length_slider',
-    'render_arquetipo_selector', 'render_mode_selector',
-    'render_additional_instructions', 'render_competitor_urls_input',
-    # Nuevas funcionalidades
+    'render_arquetipo_selector', 'render_mode_selector', 'render_html_input',
     'render_links_with_anchors', 'render_guiding_questions',
     'render_gsc_date_warning', 'render_alternative_product_input',
-    # Formulario
+    'render_competitor_urls_input', 'render_additional_instructions',
+    'render_validation_errors',
+    # Formulario principal
     'render_main_form', 'render_content_inputs',
     # Utilidades
-    'clear_form_state', 'get_form_summary',
-    # Constantes
-    'ERROR_MESSAGES', 'PCCOMPONENTES_DOMAINS',
+    'get_form_summary',
 ]
