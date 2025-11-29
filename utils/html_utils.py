@@ -245,17 +245,71 @@ def clean_html(html_content: str) -> str:
 # ============================================================================
 
 def validate_html_structure(html_content: str) -> Dict[str, bool]:
-    """Valida estructura HTML básica."""
+    """
+    Valida estructura HTML básica y detecta elementos clave.
+    
+    Returns:
+        Dict con flags de validación:
+        - has_article: Tiene al menos un <article>
+        - kicker_uses_span: Kicker usa <span> correctamente
+        - css_has_root: Tiene bloque <style> con :root
+        - has_bf_callout: Tiene callout de Black Friday
+        - no_markdown: No tiene marcadores markdown residuales
+        - has_table: Tiene tablas
+        - has_callout: Tiene callouts normales
+        - has_verdict_box: Tiene verdict-box
+        - has_toc: Tiene tabla de contenidos
+        - has_grid: Tiene grid layout
+    """
     if not html_content:
-        return {'has_article': False, 'kicker_uses_span': False, 'css_has_root': False, 'has_bf_callout': False, 'no_markdown': True}
+        return {
+            'has_article': False,
+            'kicker_uses_span': False,
+            'css_has_root': False,
+            'has_bf_callout': False,
+            'no_markdown': True,
+            'has_table': False,
+            'has_callout': False,
+            'has_verdict_box': False,
+            'has_toc': False,
+            'has_grid': False,
+        }
     
     html_lower = html_content.lower()
+    
+    # Detectar marcadores markdown (```html, ```, etc.)
+    has_markdown = any(md in html_content for md in ['```html', '```', '~~~'])
+    
+    # Detectar kicker correctamente (con span, no div)
+    has_span_kicker = ('class="kicker"' in html_lower or "class='kicker'" in html_lower) and '<span' in html_lower
+    
+    # Detectar callouts (varios formatos posibles)
+    has_bf_callout = any(x in html_lower for x in ['callout-bf', 'callout_bf', 'bf-callout', 'black-friday', 'cyber-monday'])
+    has_callout = 'class="callout"' in html_lower or "class='callout'" in html_lower
+    
+    # Detectar verdict-box (varios formatos)
+    has_verdict = any(x in html_lower for x in ['verdict-box', 'verdict_box', 'verdictbox', 'veredicto'])
+    
+    # Detectar TOC
+    has_toc = any(x in html_lower for x in ['class="toc"', "class='toc'", 'nav class="toc'])
+    
+    # Detectar Grid
+    has_grid = any(x in html_lower for x in ['grid-layout', 'grid_layout', 'display: grid', 'display:grid'])
+    
+    # Detectar tablas
+    has_table = '<table' in html_lower and '</table>' in html_lower
+    
     return {
         'has_article': '<article' in html_lower,
-        'kicker_uses_span': 'class="kicker"' in html_lower or "class='kicker'" in html_lower,
-        'css_has_root': ':root' in html_content,
-        'has_bf_callout': 'bf-callout' in html_lower,
-        'no_markdown': not any(md in html_content for md in ['```', '**', '## '])
+        'kicker_uses_span': has_span_kicker,
+        'css_has_root': ':root' in html_content and '<style' in html_lower,
+        'has_bf_callout': has_bf_callout,
+        'no_markdown': not has_markdown,
+        'has_table': has_table,
+        'has_callout': has_callout or has_bf_callout,
+        'has_verdict_box': has_verdict,
+        'has_toc': has_toc,
+        'has_grid': has_grid,
     }
 
 def validate_cms_structure(html_content: str) -> Tuple[bool, List[str], List[str]]:
@@ -325,21 +379,54 @@ def validate_word_count_target(html_content: str, target: int, tolerance: float 
 # ============================================================================
 
 def analyze_links(html_content: str) -> Dict:
-    """Analiza enlaces del HTML."""
-    if not html_content:
-        return {'total': 0, 'internal': [], 'external': [], 'pdp': [], 'blog': []}
+    """
+    Analiza enlaces del HTML.
     
+    Detecta y categoriza enlaces en:
+    - Internos (pccomponentes.com)
+    - Externos
+    - PDPs (productos)
+    - Blog
+    
+    Returns:
+        Dict con conteos y listas de enlaces
+    """
+    if not html_content:
+        return {
+            'total': 0,
+            'internal': [],
+            'external': [],
+            'pdp': [],
+            'blog': [],
+            'internal_links_count': 0,
+            'external_links_count': 0
+        }
+    
+    # Buscar todos los enlaces <a href="...">...</a>
     matches = re.findall(r'<a[^>]+href=["\']([^"\']+)["\'][^>]*>(.*?)</a>', html_content, re.I | re.DOTALL)
     
     internal, external, pdp, blog = [], [], [], []
     
     for url, anchor in matches:
-        info = {'url': url, 'anchor': strip_html_tags(anchor)}
-        if 'pccomponentes.com' in url:
+        # Limpiar anchor de tags HTML
+        clean_anchor = strip_html_tags(anchor).strip()
+        info = {'url': url, 'anchor': clean_anchor}
+        
+        # Clasificar enlaces
+        url_lower = url.lower()
+        
+        if 'pccomponentes.com' in url_lower or url.startswith('/'):
             internal.append(info)
-            if '/blog/' in url:
+            
+            # Sub-clasificar
+            if '/blog/' in url_lower:
                 blog.append(info)
-            elif any(p in url for p in ['/producto/', '/p/']):
+            # PDPs tienen varios patrones
+            elif any(pattern in url_lower for pattern in [
+                '/producto/', '/p/', 'portatil-', 'monitor-', 'tarjeta-', 
+                'procesador-', 'movil-', 'tablet-', 'televisor-', 'auricular-',
+                'teclado-', 'raton-', 'silla-', 'ordenador-'
+            ]):
                 pdp.append(info)
         elif url.startswith('http'):
             external.append(info)
@@ -350,8 +437,11 @@ def analyze_links(html_content: str) -> Dict:
         'external': external,
         'pdp': pdp,
         'blog': blog,
+        # Aliases para compatibilidad con results.py
         'internal_count': len(internal),
-        'external_count': len(external)
+        'external_count': len(external),
+        'internal_links_count': len(internal),
+        'external_links_count': len(external),
     }
 
 def get_heading_hierarchy(html_content: str) -> List[Dict[str, str]]:
