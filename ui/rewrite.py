@@ -200,7 +200,6 @@ def render_rewrite_section() -> Tuple[bool, Dict]:
         html_to_rewrite
     )
     
-    # Botón de generación
     st.markdown("---")
     
     if not can_generate:
@@ -210,27 +209,16 @@ def render_rewrite_section() -> Tuple[bool, Dict]:
     # Mostrar resumen antes de generar
     render_generation_summary(keyword, rewrite_config, gsc_analysis, html_to_rewrite)
     
-    # Botón grande de generación
-    col1, col2, col3 = st.columns([1, 2, 1])
-    with col2:
-        start_generation = st.button(
-            "🚀 Generar Contenido Mejorado",
-            type="primary",
-            use_container_width=True
-        )
+    # Preparar configuración completa (el botón está en app.py)
+    full_config = prepare_rewrite_config(
+        keyword=keyword,
+        competitors_data=st.session_state.rewrite_competitors_data,
+        rewrite_config=rewrite_config,
+        gsc_analysis=gsc_analysis,
+        html_to_rewrite=html_to_rewrite
+    )
     
-    if start_generation:
-        # Preparar configuración completa
-        full_config = prepare_rewrite_config(
-            keyword=keyword,
-            competitors_data=st.session_state.rewrite_competitors_data,
-            rewrite_config=rewrite_config,
-            gsc_analysis=gsc_analysis,
-            html_to_rewrite=html_to_rewrite
-        )
-        return True, full_config
-    
-    return False, {}
+    return True, full_config
 
 
 # ============================================================================
@@ -393,7 +381,8 @@ def render_keyword_input() -> Tuple[str, bool]:
                 "🔍 Buscar Competidores",
                 disabled=search_disabled,
                 use_container_width=True,
-                type="primary"
+                type="primary",
+                key="btn_search_competitors"
             )
         else:
             search_button = False
@@ -543,7 +532,8 @@ https://competitor3.com/review""",
         analyze_btn = st.button(
             "🔍 Analizar URLs",
             disabled=not urls_input.strip(),
-            type="primary"
+            type="primary",
+            key="btn_analyze_urls"
         )
     
     with col2:
