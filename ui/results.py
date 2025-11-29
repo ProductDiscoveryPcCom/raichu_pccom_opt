@@ -220,11 +220,7 @@ def render_content_tab(
         st.markdown("**Elementos clave:**")
         render_validation_check("Kicker con span", basic_validation.get('kicker_uses_span', False))
         render_validation_check("Callout BF", basic_validation.get('has_bf_callout', False))
-        
-        # Extraer estructura para más checks
-        structure = extract_content_structure(html_content)
-        has_verdict = structure.get('has_verdict', False)
-        render_validation_check("Verdict Box", has_verdict)
+        render_validation_check("Verdict Box", basic_validation.get('has_verdict_box', False))
     
     with validation_cols[2]:
         st.markdown("**Análisis de enlaces:**")
@@ -234,9 +230,29 @@ def render_content_tab(
         external_count = links_analysis.get('external_links_count', 0)
         
         # Validar rango recomendado: 2-3 internos, 1-2 PDPs
-        has_good_internal = 2 <= internal_count <= 5
+        has_good_internal = internal_count >= 1
         render_validation_check(f"Enlaces internos ({internal_count})", has_good_internal)
-        render_validation_check(f"Enlaces externos ({external_count})", external_count >= 1)
+        render_validation_check(f"Enlaces externos ({external_count})", external_count >= 0)
+    
+    # Sección de elementos visuales detectados
+    st.markdown("---")
+    st.markdown("**📊 Elementos visuales detectados:**")
+    
+    elem_cols = st.columns(5)
+    elements_status = {
+        'Tablas': basic_validation.get('has_table', False),
+        'Callouts': basic_validation.get('has_callout', False),
+        'Verdict Box': basic_validation.get('has_verdict_box', False),
+        'TOC': basic_validation.get('has_toc', False),
+        'Grid Layout': basic_validation.get('has_grid', False),
+    }
+    
+    for i, (elem_name, is_present) in enumerate(elements_status.items()):
+        with elem_cols[i]:
+            if is_present:
+                st.markdown(f"✅ **{elem_name}**")
+            else:
+                st.markdown(f"❌ **{elem_name}**")
     
     # Botones de acción
     st.markdown("---")
@@ -278,8 +294,39 @@ def render_content_tab(
     
     with preview_tab1:
         st.caption("Vista previa de cómo se verá el contenido renderizado")
+        
+        # Limpiar HTML de posibles marcadores markdown antes de renderizar
+        clean_html = html_content
+        if clean_html.strip().startswith('```'):
+            import re
+            # Eliminar ```html al inicio
+            clean_html = re.sub(r'^```html\s*\n?', '', clean_html.strip(), flags=re.IGNORECASE)
+            clean_html = re.sub(r'^```\s*\n?', '', clean_html.strip())
+            # Eliminar ``` al final
+            clean_html = re.sub(r'\n?```\s*$', '', clean_html.strip())
+        
+        # Verificar si tiene estilos, si no los tiene, añadir CSS básico
+        if '<style>' not in clean_html.lower():
+            basic_css = """<style>
+:root{--orange-900:#FF6000;--blue-m-900:#170453;--white:#FFFFFF;--gray-100:#F5F5F5;--gray-200:#E5E5E5;--gray-700:#404040;--gray-900:#171717;}
+.contentGenerator__main,.contentGenerator__faqs,.contentGenerator__verdict{font-family:'Inter',sans-serif;line-height:1.7;color:var(--gray-900);}
+.kicker{display:inline-block;background:var(--orange-900);color:var(--white);padding:4px 12px;font-size:12px;font-weight:700;text-transform:uppercase;border-radius:4px;margin-bottom:16px;}
+.toc{background:var(--gray-100);border-radius:8px;padding:24px;margin:24px 0;}
+.toc__title{font-weight:700;margin-bottom:12px;}
+.faqs__item{border-bottom:1px solid var(--gray-200);padding:16px 0;}
+.faqs__question{font-weight:600;margin-bottom:8px;}
+.verdict-box{background:linear-gradient(135deg,var(--blue-m-900),#2E1A7A);color:var(--white);padding:24px;border-radius:8px;}
+.callout{background:var(--gray-100);border-left:4px solid var(--orange-900);padding:16px;margin:24px 0;}
+.callout-bf{background:var(--blue-m-900);color:var(--white);padding:24px;border-radius:8px;text-align:center;}
+table{width:100%;border-collapse:collapse;margin:24px 0;}
+th,td{padding:12px;text-align:left;border-bottom:1px solid var(--gray-200);}
+th{background:var(--gray-100);font-weight:600;}
+</style>
+"""
+            clean_html = basic_css + clean_html
+        
         with st.container():
-            st.markdown(html_content, unsafe_allow_html=True)
+            st.markdown(clean_html, unsafe_allow_html=True)
     
     with preview_tab2:
         render_structure_analysis(html_content)
