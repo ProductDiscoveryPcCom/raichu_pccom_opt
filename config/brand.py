@@ -1,6 +1,7 @@
+# -*- coding: utf-8 -*-
 """
 Brand Configuration - PcComponentes Content Generator
-Versión 4.2.0
+Versión 4.3.0
 
 Configuración de marca: CSS del CMS, tono de voz, colores y guías de estilo.
 Basado en el Manual de Tono de Marca oficial de PcComponentes.
@@ -10,6 +11,8 @@ Este módulo contiene:
 - BRAND_TONE: Directrices de tono de voz
 - BRAND_COLORS: Paleta de colores corporativos
 - BRAND_VOICE_GUIDELINES: Guía detallada de comunicación
+- get_tone_instructions(): Función para generar instrucciones de tono
+- get_system_prompt_base(): System prompt base para prompts
 
 Autor: PcComponentes - Product Discovery & Content
 """
@@ -20,7 +23,7 @@ from typing import Dict, List
 # VERSIÓN DEL MÓDULO
 # ============================================================================
 
-__version__ = "4.2.0"
+__version__ = "4.3.0"
 
 # ============================================================================
 # INFORMACIÓN DE MARCA
@@ -73,7 +76,7 @@ BRAND_COLORS: Dict[str, str] = {
 
 
 # ============================================================================
-# CSS COMPLETO COMPATIBLE CON CMS - v4.2.0
+# CSS COMPLETO COMPATIBLE CON CMS - v4.3.0
 # ============================================================================
 
 CSS_CMS_COMPATIBLE = """
@@ -678,16 +681,6 @@ article a{color:var(--orange-900);}
 # ============================================================================
 
 BRAND_TONE = """
-# TONO DE MARCA PCCOMPONENTES
-
-## MISIÓN
-"Ofrecer la mejor experiencia de recomendación y compra para productos y servicios tecnológicos."
-
-En PcComponentes NO vendemos productos, CREAMOS EXPERIENCIAS. Esta misión es una promesa en cada interacción:
-- Cada persona que nos escribe, nos llama o compra, debe sentir que importa.
-- No es un número de pedido. No es un "cliente más".
-- Es alguien que nos elige y merece una experiencia diferente.
-
 ## NUESTRA PERSONALIDAD
 
 ### 🧠 Expertos sin ser pedantes
@@ -724,15 +717,6 @@ En PcComponentes NO vendemos productos, CREAMOS EXPERIENCIAS. Esta misión es un
 - Somos naturales, cálidos y humanos. Como cuando hablas con alguien que quiere ayudarte de verdad.
 - Ejemplo: "Si te cuadra, adelante. Si no, seguimos buscando. Lo bueno es que opciones hay, y estamos contigo."
 
-## AXIOMAS DE COMUNICACIÓN
-
-| Axioma | Cómo se traduce |
-|--------|-----------------|
-| Asesoramiento experto sin complicaciones | No usamos jerga si no hace falta. Damos respuestas útiles, personalizadas y con empatía. Hablamos con la misma naturalidad con la que recomendaríamos algo a un amigo. |
-| Lo que buscas, al mejor precio | No basamos todo nuestro mensaje en el precio. El valor está en todo lo que hay alrededor: confianza, experiencia, agilidad. Somos honestos: ni promesas vacías ni letras pequeñas. |
-| Recíbelo antes de que lo eches de menos | Somos proactivos. Si hay un retraso, avisamos. Si hay duda, resolvemos. Si algo cambia, lo contamos antes de que el cliente tenga que preguntar. |
-| Cero problemas, solo soluciones | No escondemos el teléfono. No pedimos disculpas de manual. Damos soluciones reales. Hablamos con la responsabilidad de quien se hace cargo. |
-
 ## PRINCIPIOS PRÁCTICOS
 
 | Principio | Qué significa | Ejemplo |
@@ -741,10 +725,8 @@ En PcComponentes NO vendemos productos, CREAMOS EXPERIENCIAS. Esta misión es un
 | No vendemos humo | Preferimos ser honestos que sonar geniales | "No es gaming, pero para tareas del día a día, docs y maratones de Netflix, va sobrado." |
 | Nos ponemos en su lugar | Pensamos en qué espera la persona al leer | "Sabemos que no era lo que esperabas. Por eso vamos a darte una solución cuanto antes." |
 | Sumamos valor | Siempre dejamos al cliente mejor de lo que llegó | "Además del cambio, te activamos un descuento para tu próxima compra." |
-| Humanizamos los canales | Cada canal debe sentirse vivo | En redes: agilidad y humor. En email: cuidado y precisión. En soporte: responsabilidad. |
 
 ## LO QUE SÍ HACEMOS ✅
-
 - Hablamos como una persona real (no como una máquina de texto)
 - Escribimos con empatía y cercanía, incluso si la situación es tensa
 - Adaptamos el lenguaje según el nivel del usuario
@@ -752,30 +734,11 @@ En PcComponentes NO vendemos productos, CREAMOS EXPERIENCIAS. Esta misión es un
 - Añadimos un toque humano, incluso si usamos plantillas
 
 ## LO QUE EVITAMOS ❌
-
 - Tono plano, impersonal, institucional o frío
 - Automatismos que se notan (y desconectan)
 - Explicaciones tipo "esto es lo que hay"
 - Lenguaje excesivamente técnico si no lo necesita
 - Mensajes que podrían ser intercambiables con cualquier otra tienda
-
-## PARA CONTENIDO SEO/EDITORIAL
-
-### Enfoque aspiracional
-- Usar "Perfecto si..." en lugar de "Evita si..."
-- Presentar beneficios, no limitaciones
-- Ser honestos sin ser negativos
-
-### Estructura recomendada
-- Empezar con gancho que conecte con el usuario
-- Desarrollar con información práctica y útil
-- Cerrar con veredicto claro y accionable
-
-### Lenguaje
-- Tutear al lector
-- Usar frases cortas y directas
-- Incluir analogías tech cuando aporten valor
-- Evitar repetición excesiva de keywords (naturalidad > SEO mecánico)
 """
 
 
@@ -825,45 +788,6 @@ BRAND_VOICE_GUIDELINES: Dict[str, any] = {
         },
     ],
     
-    'axioms': {
-        'expert_advice': {
-            'title': 'Asesoramiento experto sin complicaciones',
-            'tagline': 'Te recomendamos justo lo que necesitas, sin que tengas que entenderlo todo.',
-            'application': 'No usamos jerga si no hace falta. Damos respuestas útiles, personalizadas y con empatía.'
-        },
-        'best_price': {
-            'title': 'Lo que buscas, al mejor precio',
-            'tagline': 'Los buenos precios no son nuestro diferencial, son un básico que cumplimos con nota.',
-            'application': 'No basamos todo en el precio. El valor está en confianza, experiencia, agilidad.'
-        },
-        'fast_delivery': {
-            'title': 'Recíbelo antes de que lo eches de menos',
-            'tagline': 'Rápidos sí, pero sobre todo claros, flexibles y sin letra pequeña.',
-            'application': 'Somos proactivos. Si hay un retraso, avisamos antes de que pregunten.'
-        },
-        'zero_problems': {
-            'title': 'Cero problemas, solo soluciones',
-            'tagline': 'Si algo va mal, lo resolvemos. Sin excusas, sin rodeos, sin complicaciones.',
-            'application': 'No escondemos el teléfono. Damos soluciones reales con responsabilidad.'
-        },
-    },
-    
-    'do_list': [
-        'Hablar como una persona real (no como una máquina de texto)',
-        'Escribir con empatía y cercanía, incluso si la situación es tensa',
-        'Adaptar el lenguaje según el nivel del usuario',
-        'Sumar siempre un plus: contexto, ayuda o calidez',
-        'Añadir un toque humano, incluso si usamos plantillas',
-    ],
-    
-    'dont_list': [
-        'Tono plano, impersonal, institucional o frío',
-        'Automatismos que se notan (y desconectan)',
-        'Explicaciones tipo "esto es lo que hay"',
-        'Lenguaje excesivamente técnico si no lo necesita',
-        'Mensajes que podrían ser intercambiables con cualquier otra tienda',
-    ],
-    
     'practical_principles': [
         {
             'principle': 'Hablamos claro',
@@ -885,32 +809,165 @@ BRAND_VOICE_GUIDELINES: Dict[str, any] = {
             'meaning': 'Siempre dejamos al cliente mejor de lo que llegó',
             'example': 'Además del cambio, te activamos un descuento para tu próxima compra.'
         },
-        {
-            'principle': 'Humanizamos los canales',
-            'meaning': 'Cada canal debe sentirse vivo',
-            'example': 'En redes: agilidad y humor. En email: cuidado y precisión. En soporte: responsabilidad.'
-        },
     ],
     
-    'seo_content_guidelines': {
-        'approach': 'aspiracional',
-        'use_instead_of': {
-            'positive': 'Perfecto si...',
-            'negative': 'Evita si...',
-        },
-        'structure': [
-            'Empezar con gancho que conecte con el usuario',
-            'Desarrollar con información práctica y útil',
-            'Cerrar con veredicto claro y accionable',
-        ],
-        'language': [
-            'Tutear al lector',
-            'Usar frases cortas y directas',
-            'Incluir analogías tech cuando aporten valor',
-            'Evitar repetición excesiva de keywords (naturalidad > SEO mecánico)',
-        ],
-    },
+    'do_list': [
+        'Hablar como una persona real (no como una máquina de texto)',
+        'Escribir con empatía y cercanía, incluso si la situación es tensa',
+        'Adaptar el lenguaje según el nivel del usuario',
+        'Sumar siempre un plus: contexto, ayuda o calidez',
+        'Añadir un toque humano, incluso si usamos plantillas',
+    ],
+    
+    'dont_list': [
+        'Tono plano, impersonal, institucional o frío',
+        'Automatismos que se notan (y desconectan)',
+        'Explicaciones tipo "esto es lo que hay"',
+        'Lenguaje excesivamente técnico si no lo necesita',
+        'Mensajes que podrían ser intercambiables con cualquier otra tienda',
+    ],
 }
+
+
+# ============================================================================
+# INSTRUCCIONES ANTI-IA (evitar signos de escritura artificial)
+# ============================================================================
+
+INSTRUCCIONES_ANTI_IA = """
+## ❌ EVITAR SIGNOS DE ESCRITURA CON IA
+
+### FRASES PROHIBIDAS (nunca las uses):
+- "En el mundo actual..." / "En la era digital..."
+- "Sin lugar a dudas..." / "Es importante destacar..."
+- "Cabe mencionar que..." / "Es fundamental..."
+- "A la hora de..." / "En lo que respecta a..."
+- "Ofrece una experiencia..." / "Brinda la posibilidad..."
+- "Esto se traduce en..." / "Lo que permite..."
+- "Ya sea... como..." / "Tanto... como..."
+
+### PATRONES A EVITAR:
+- Adjetivos vacíos: "increíble", "revolucionario", "impresionante", "excepcional"
+- Repetir la misma estructura en cada párrafo
+- Listas interminables sin personalidad ni opinión
+- Conclusiones que solo resumen lo dicho sin aportar nada nuevo
+- Frases que podrían ser de cualquier tienda genérica
+- Tono corporativo o institucional
+- Empezar párrafos siempre igual
+
+### ✅ SÍ HACER:
+- Tutear al lector de forma natural
+- Dar tu opinión honesta (incluso si hay pegas)
+- Usar analogías tech y referencias que nuestro público entiende
+- Variar la estructura de los párrafos
+- Añadir detalles específicos, no generalidades
+- Si algo tiene un "pero", decirlo (genera confianza)
+- El veredicto debe aportar valor real, no repetir lo anterior
+"""
+
+
+# ============================================================================
+# INSTRUCCIONES ESPECÍFICAS SEGÚN DATOS DISPONIBLES
+# ============================================================================
+
+INSTRUCCIONES_CON_DATOS_PRODUCTO = """
+## 📦 CÓMO USAR LOS DATOS DEL PRODUCTO
+
+Tienes acceso a información REAL del producto incluyendo opiniones de usuarios.
+USA ESTA INFORMACIÓN para crear contenido auténtico:
+
+### 🟢 VENTAJAS DE USUARIOS:
+- Son puntos que los compradores REALES han destacado
+- Úsalos para argumentar beneficios con CREDIBILIDAD
+- Parafrasea con tu estilo, no copies literalmente
+- Prioriza las ventajas más mencionadas
+
+### 🟡 DESVENTAJAS DE USUARIOS:
+- Son los "peros" que han encontrado los compradores
+- MENCIÓNALOS con honestidad (genera CONFIANZA, es nuestro tono)
+- Contextualiza: "para el precio no se puede pedir más"
+- No los escondas, pero no los exageres
+
+### 💬 OPINIONES REALES:
+- Fíjate en el lenguaje que usan los usuarios reales
+- Inspírate en sus expresiones naturales
+- Evita sonar robótico: ellos hablan como personas, tú también
+
+### 📋 ESPECIFICACIONES:
+- Traduce datos técnicos a beneficios PRÁCTICOS
+- No listes specs sin explicar para qué sirven
+- Ejemplo: "144Hz" → "partidas más fluidas sin tirones"
+"""
+
+INSTRUCCIONES_SIN_DATOS_PRODUCTO = """
+## 📝 CREAR CONTENIDO SIN DATOS ESPECÍFICOS
+
+No tienes datos específicos del producto, pero puedes crear contenido IGUAL DE BUENO:
+
+### ESTRATEGIAS:
+1. **Céntrate en la keyword y el arquetipo**: Son tu guía principal
+2. **Usa tu conocimiento general**: Eres experto en tecnología
+3. **Habla de la categoría**: Qué busca alguien interesado en este tipo de producto
+4. **Da consejos prácticos**: Qué debería considerar el comprador
+5. **Sé honesto**: "Depende de tu uso" es mejor que inventar
+
+### TONO:
+- Mismo tono PcComponentes: cercano, experto, con chispa
+- Como si recomendaras algo a un amigo
+- Opiniones basadas en conocimiento general del sector
+- Si no sabes algo específico, no lo inventes
+
+### ESTRUCTURA:
+- Introduce el tema con gancho (NO "En el mundo actual...")
+- Desarrolla con información útil y práctica
+- Incluye siempre un "pero" o consideración (honestidad)
+- Cierra con veredicto que APORTE valor real
+"""
+
+
+# ============================================================================
+# FUNCIONES DE TONO PARA PROMPTS
+# ============================================================================
+
+def get_tone_instructions(has_product_data: bool = False) -> str:
+    """
+    Genera las instrucciones de tono completas para un prompt.
+    
+    Args:
+        has_product_data: Si hay datos de producto disponibles
+        
+    Returns:
+        String con todas las instrucciones de tono
+    """
+    base = f"""
+# TONO DE MARCA PCCOMPONENTES
+
+{BRAND_TONE}
+
+{INSTRUCCIONES_ANTI_IA}
+"""
+    
+    if has_product_data:
+        return base + INSTRUCCIONES_CON_DATOS_PRODUCTO
+    else:
+        return base + INSTRUCCIONES_SIN_DATOS_PRODUCTO
+
+
+def get_system_prompt_base() -> str:
+    """Genera el system prompt base para todas las etapas."""
+    return """Eres un redactor SEO experto de PcComponentes, la tienda líder de tecnología en España.
+
+TONO DE MARCA:
+- Expertos sin ser pedantes: sabemos de lo que hablamos, pero sin tecnicismos innecesarios
+- Frikis sin vergüenza: nos flipan los gadgets y el humor tech
+- Honestos pero no aburridos: si algo tiene un "pero", lo decimos
+- Cercanos sin ser forzados: naturales, no diminutivos ni emojis excesivos
+
+EVITA SIGNOS DE IA:
+- "En el mundo actual...", "Sin lugar a dudas...", "Es importante destacar..."
+- Adjetivos vacíos: "increíble", "revolucionario", "impresionante"
+- Conclusiones que solo resumen sin aportar
+
+IMPORTANTE: Genera HTML puro, NUNCA uses ```html ni marcadores markdown."""
 
 
 # ============================================================================
@@ -936,4 +993,11 @@ __all__ = [
     # Tono de marca
     'BRAND_TONE',
     'BRAND_VOICE_GUIDELINES',
+    
+    # Instrucciones para prompts
+    'INSTRUCCIONES_ANTI_IA',
+    'INSTRUCCIONES_CON_DATOS_PRODUCTO',
+    'INSTRUCCIONES_SIN_DATOS_PRODUCTO',
+    'get_tone_instructions',
+    'get_system_prompt_base',
 ]
