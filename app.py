@@ -295,7 +295,7 @@ def render_app_header() -> str:
         )
     
     with col3:
-        if st.button("🗑️ Limpiar", use_container_width=True):
+        if st.button("🗑️ Limpiar", use_container_width=True, key="btn_clear_all"):
             clear_session_state()
             st.rerun()
     
@@ -440,7 +440,8 @@ def render_new_content_mode() -> None:
             "🚀 Generar Contenido",
             type="primary",
             use_container_width=True,
-            disabled=st.session_state.get('generation_in_progress', False)
+            disabled=st.session_state.get('generation_in_progress', False),
+            key="btn_generate_new"
         )
     
     if generate_clicked:
@@ -476,7 +477,8 @@ def render_rewrite_mode() -> None:
             "🚀 Generar Reescritura",
             type="primary",
             use_container_width=True,
-            disabled=st.session_state.get('generation_in_progress', False)
+            disabled=st.session_state.get('generation_in_progress', False),
+            key="btn_generate_rewrite"
         )
     
     if generate_clicked:
@@ -534,7 +536,8 @@ def render_verify_mode() -> None:
         verify_clicked = st.button(
             "🔍 Verificar Keyword",
             type="primary",
-            use_container_width=True
+            use_container_width=True,
+            key="btn_verify_keyword"
         )
     
     if verify_clicked:
@@ -721,7 +724,7 @@ def render_refinement_section() -> None:
     col1, col2 = st.columns(2)
     
     with col1:
-        if st.button("🚀 Aplicar Refinamiento", type="primary", use_container_width=True):
+        if st.button("🚀 Aplicar Refinamiento", type="primary", use_container_width=True, key="btn_apply_refinement"):
             if refine_prompt.strip():
                 execute_refinement(refine_prompt)
             else:
@@ -834,10 +837,10 @@ def render_undo_button() -> None:
     history = st.session_state.get('content_history', [])
     
     if not history:
-        st.button("↩️ Deshacer", disabled=True, use_container_width=True)
+        st.button("↩️ Deshacer", disabled=True, use_container_width=True, key="btn_undo_disabled")
         return
     
-    if st.button("↩️ Deshacer último cambio", use_container_width=True):
+    if st.button("↩️ Deshacer último cambio", use_container_width=True, key="btn_undo_active"):
         # Restaurar última versión
         last_version = history.pop()
         st.session_state.final_html = last_version['content']
