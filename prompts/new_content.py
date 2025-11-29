@@ -1,30 +1,53 @@
+# -*- coding: utf-8 -*-
 """
 New Content Prompts - PcComponentes Content Generator
-Versión 4.5.1
+Versión 4.8.0
 
-Prompts para generación de contenido nuevo en 3 etapas:
-1. Borrador inicial
-2. Análisis y correcciones
-3. Versión final
+Prompts para generación de contenido nuevo en 3 etapas.
 
-CORRECCIONES v4.5.1:
-- Añadido build_final_prompt_stage3 como alias (compatibilidad con app.py)
-- Incluidos parámetros keyword, links_data, alternative_product en Stage 3
-- Añadido CSS completo con :root en la generación
-- Instrucciones explícitas para NO usar markdown
-- FAQs deben incluir la keyword
-- Plantillas para elementos visuales opcionales
+CARACTERÍSTICAS:
+- Funciona igual de bien CON o SIN datos de producto
+- CON datos: usa ventajas/desventajas/opiniones para contenido auténtico
+- SIN datos: instrucciones alternativas basadas en conocimiento general
+- Tono de marca PcComponentes integrado (desde brand_tone.py)
+- Instrucciones anti-IA para evitar patrones artificiales
+
+CAMPOS DE PRODUCTO SOPORTADOS (del Dict pdp_data):
+| Campo              | Tipo         | Uso en Prompt                         |
+|--------------------|--------------|---------------------------------------|
+| title              | str          | Nombre del producto                   |
+| brand_name         | str          | Marca                                 |
+| family_name        | str          | Categoría                             |
+| attributes         | Dict         | Especificaciones técnicas             |
+| total_comments     | int          | Credibilidad (N valoraciones)         |
+| advantages_list    | List[str]    | Ventajas procesadas → argumentar      |
+| disadvantages_list | List[str]    | Desventajas → honestidad              |
+| top_comments       | List[str]    | Opiniones → lenguaje natural          |
+| has_user_feedback  | bool         | Flag si hay feedback de usuarios      |
 
 Autor: PcComponentes - Product Discovery & Content
 """
 
 from typing import Dict, List, Optional, Any
 
-__version__ = "4.5.1"
+__version__ = "4.8.0"
+
+# Importar constantes de tono
+try:
+    from prompts.brand_tone import get_tone_instructions, get_system_prompt_base
+except ImportError:
+    try:
+        from brand_tone import get_tone_instructions, get_system_prompt_base
+    except ImportError:
+        # Fallback inline si no existe el módulo
+        def get_tone_instructions(has_product_data: bool = False) -> str:
+            return ""
+        def get_system_prompt_base() -> str:
+            return "Eres un redactor SEO experto de PcComponentes."
 
 
 # ============================================================================
-# CSS MINIFICADO PARA INCLUIR EN EL HTML
+# CSS MINIFICADO
 # ============================================================================
 
 CSS_INLINE_MINIFIED = """:root{--orange-900:#FF6000;--blue-m-900:#170453;--white:#FFFFFF;--gray-100:#F5F5F5;--gray-200:#E5E5E5;--gray-700:#404040;--gray-900:#171717;--space-md:16px;--space-lg:24px;--radius-md:8px;}
@@ -38,54 +61,139 @@ CSS_INLINE_MINIFIED = """:root{--orange-900:#FF6000;--blue-m-900:#170453;--white
 .faqs__question{font-weight:600;margin-bottom:8px;}
 .verdict-box{background:linear-gradient(135deg,var(--blue-m-900),#2E1A7A);color:var(--white);padding:var(--space-lg);border-radius:var(--radius-md);}
 .callout{background:var(--gray-100);border-left:4px solid var(--orange-900);padding:var(--space-md);margin:var(--space-lg) 0;border-radius:0 var(--radius-md) var(--radius-md) 0;}
-.callout-bf{background:var(--blue-m-900);color:var(--white);padding:var(--space-lg);border-radius:var(--radius-md);text-align:center;}
 table{width:100%;border-collapse:collapse;margin:var(--space-lg) 0;}
 th,td{padding:12px;text-align:left;border-bottom:1px solid var(--gray-200);}
 th{background:var(--gray-100);font-weight:600;}"""
 
 
 # ============================================================================
-# PLANTILLAS DE ELEMENTOS VISUALES
+# FORMATEAR DATOS DE PRODUCTO PARA PROMPT
 # ============================================================================
 
-ELEMENT_TEMPLATES = {
-    'callout': '''<div class="callout">
-    <p><strong>💡 Dato importante:</strong> [Tu contenido aquí]</p>
-</div>''',
+def _format_product_section(pdp_data: Optional[Dict]) -> tuple:
+    """
+    Formatea datos del producto para el prompt.
     
-    'callout_bf': '''<div class="callout-bf">
-    <p>🔥 <strong>OFERTA BLACK FRIDAY</strong> 🔥</p>
-    <p>[Descripción de la oferta]</p>
-</div>''',
+    Args:
+        pdp_data: Dict con datos del producto (resultado de PDPProductData.to_dict())
+                  Puede ser None si no hay datos
+        
+    Returns:
+        Tuple[section_text: str, has_feedback: bool]
+    """
+    if not pdp_data:
+        return "", False
     
-    'table': '''<table>
-    <thead>
-        <tr>
-            <th>Característica</th>
-            <th>Opción A</th>
-            <th>Opción B</th>
-        </tr>
-    </thead>
-    <tbody>
-        <tr>
-            <td>Especificación 1</td>
-            <td>Valor A</td>
-            <td>Valor B</td>
-        </tr>
-    </tbody>
-</table>''',
+    lines = []
+    has_feedback = pdp_data.get('has_user_feedback', False)
     
-    'verdict_box': '''<div class="verdict-box">
-    <h2>Veredicto Final</h2>
-    <p>[Tu conclusión aquí]</p>
-</div>''',
+    lines.append("=" * 60)
+    lines.append("DATOS DEL PRODUCTO")
+    lines.append("=" * 60)
     
-    'grid': '''<div class="grid-layout">
-    <div class="grid-item">[Item 1]</div>
-    <div class="grid-item">[Item 2]</div>
-    <div class="grid-item">[Item 3]</div>
-</div>''',
-}
+    # Info básica
+    title = pdp_data.get('title', '')
+    if title:
+        lines.append(f"\n**Producto:** {title}")
+    
+    brand = pdp_data.get('brand_name', '')
+    if brand:
+        lines.append(f"**Marca:** {brand}")
+    
+    family = pdp_data.get('family_name', '')
+    if family:
+        lines.append(f"**Categoría:** {family}")
+    
+    # Especificaciones
+    attrs = pdp_data.get('attributes', {})
+    if attrs:
+        lines.append("\n**📋 ESPECIFICACIONES:**")
+        for i, (k, v) in enumerate(attrs.items()):
+            if i >= 8:
+                lines.append(f"  ... (+{len(attrs) - 8} más)")
+                break
+            lines.append(f"  • {k}: {v}")
+    
+    # Credibilidad
+    total = pdp_data.get('total_comments', 0)
+    if total > 0:
+        lines.append(f"\n**⭐ VALORACIONES:** {total} opiniones de compradores")
+    
+    # Ventajas (procesadas)
+    advs = pdp_data.get('advantages_list', [])
+    if advs:
+        lines.append("\n**🟢 LO QUE VALORAN LOS USUARIOS (usa para argumentar):**")
+        for adv in advs[:8]:
+            lines.append(f"  ✓ {adv}")
+    
+    # Desventajas (procesadas)
+    disadvs = pdp_data.get('disadvantages_list', [])
+    if disadvs:
+        lines.append("\n**🟡 PUNTOS A CONSIDERAR (menciona con honestidad):**")
+        for dis in disadvs[:5]:
+            lines.append(f"  • {dis}")
+    
+    # Opiniones
+    comments = pdp_data.get('top_comments', [])
+    if comments:
+        lines.append("\n**💬 ASÍ HABLAN LOS USUARIOS (inspírate en su lenguaje):**")
+        for i, c in enumerate(comments[:3]):
+            short = c[:200] + "..." if len(c) > 200 else c
+            lines.append(f'\n  [{i+1}] "{short}"')
+    
+    lines.append("\n" + "=" * 60)
+    return "\n".join(lines), has_feedback
+
+
+def _get_data_usage_instructions(has_data: bool, has_feedback: bool) -> str:
+    """
+    Genera instrucciones específicas según los datos disponibles.
+    
+    Args:
+        has_data: Si hay datos de producto
+        has_feedback: Si hay feedback de usuarios (ventajas/desventajas/opiniones)
+    """
+    if has_data and has_feedback:
+        return """
+## 📦 CÓMO USAR LOS DATOS DEL PRODUCTO
+
+Tienes datos REALES del producto incluyendo opiniones de usuarios. ÚSALOS:
+
+1. **Ventajas (🟢):** Puntos que compradores REALES han destacado
+   - Úsalos para argumentar beneficios con credibilidad
+   - Parafrasea con tu estilo, no copies literalmente
+
+2. **Desventajas (🟡):** Los "peros" que han encontrado
+   - MENCIÓNALOS con honestidad (genera CONFIANZA)
+   - Contextualiza: "para el precio no se puede pedir más"
+
+3. **Opiniones (💬):** Lenguaje de usuarios reales
+   - Inspírate en sus expresiones naturales
+   - Evita sonar robótico: ellos hablan como personas
+
+4. **Especificaciones:** Traduce datos técnicos a beneficios PRÁCTICOS
+"""
+    elif has_data:
+        return """
+## 📦 DATOS DISPONIBLES
+
+Tienes información básica del producto pero sin feedback de usuarios.
+Usa los datos como contexto y complementa con tu conocimiento del sector.
+"""
+    else:
+        return """
+## 📝 SIN DATOS ESPECÍFICOS DE PRODUCTO
+
+No tienes datos del producto, pero puedes crear contenido IGUAL DE BUENO:
+
+1. **Céntrate en la keyword:** Es tu guía principal
+2. **Usa conocimiento general:** Eres experto en tecnología
+3. **Habla de la categoría:** Qué busca alguien interesado en esto
+4. **Da consejos prácticos:** Qué debería considerar el comprador
+5. **Sé honesto:** "Depende de tu uso" es mejor que inventar
+
+El tono debe ser el mismo: cercano, experto, con chispa y honesto.
+"""
 
 
 # ============================================================================
@@ -102,122 +210,101 @@ def build_new_content_prompt_stage1(
     additional_instructions: str = "",
     campos_especificos: Optional[Dict] = None,
     visual_elements: Optional[List[str]] = None,
-    guiding_context: str = "",  # AÑADIDO: Contexto guía del usuario
-    alternative_product: Optional[Dict] = None,  # AÑADIDO: Producto alternativo
+    guiding_context: str = "",
+    alternative_product: Optional[Dict] = None,
 ) -> str:
     """
-    Construye el prompt para la Etapa 1: Generación del borrador inicial.
+    Construye prompt para Etapa 1: Borrador inicial.
+    
+    Funciona igual de bien CON o SIN datos de producto.
     
     Args:
         keyword: Keyword principal
-        arquetipo: Dict con datos del arquetipo seleccionado
+        arquetipo: Dict con name, description del arquetipo
         target_length: Longitud objetivo en palabras
-        pdp_data: Datos del producto (si aplica)
-        links_data: Lista de enlaces a incluir
+        pdp_data: Dict con datos del producto (de PDPProductData.to_dict())
+        links_data: Lista de enlaces [{url, anchor, type, product_data}]
         secondary_keywords: Keywords secundarias
-        additional_instructions: Instrucciones adicionales
+        additional_instructions: Instrucciones adicionales del usuario
         campos_especificos: Campos específicos del arquetipo
-        visual_elements: Lista de elementos visuales a incluir
-        guiding_context: Contexto guía proporcionado por el usuario
+        visual_elements: Elementos visuales a incluir
+        guiding_context: Contexto guía del usuario
         alternative_product: Producto alternativo a mencionar
         
     Returns:
-        Prompt completo para el borrador
+        Prompt completo para Claude
     """
     arquetipo_name = arquetipo.get('name', 'Contenido SEO')
     arquetipo_desc = arquetipo.get('description', '')
     
-    # Construir sección de producto
-    product_section = ""
-    if pdp_data:
-        product_section = f"""
-## DATOS DEL PRODUCTO
-- Nombre: {pdp_data.get('name', 'N/A')}
-- Precio: {pdp_data.get('price', 'N/A')}
-- Descripción: {pdp_data.get('description', 'N/A')[:500]}
-- Características: {pdp_data.get('features', 'N/A')}
-"""
+    # Formatear producto
+    product_section, has_feedback = _format_product_section(pdp_data)
+    has_product_data = bool(pdp_data)
     
-    # Construir sección de enlaces - OBLIGATORIOS
+    # Instrucciones de tono (adapta según si hay datos)
+    tone_instructions = get_tone_instructions(has_product_data)
+    
+    # Instrucciones de uso de datos
+    data_instructions = _get_data_usage_instructions(has_product_data, has_feedback)
+    
+    # Enlaces
     links_section = ""
     if links_data:
-        links_section = "\n## ENLACES OBLIGATORIOS (USA SOLO ESTOS)\n"
-        links_section += "**IMPORTANTE: Incluye ÚNICAMENTE estos enlaces en el contenido. NO inventes otros.**\n\n"
+        links_section = "\n## 🔗 ENLACES OBLIGATORIOS (USA SOLO ESTOS)\n"
         for i, link in enumerate(links_data, 1):
-            link_type = link.get('type', 'interno')
             url = link.get('url', '')
-            anchor = link.get('anchor', link.get('text', ''))
-            links_section += f"{i}. **[{anchor}]({url})** - Tipo: {link_type}\n"
+            anchor = link.get('anchor', '')
+            ltype = link.get('type', 'interno')
+            links_section += f"{i}. **[{anchor}]({url})** - {ltype}\n"
     
     # Keywords secundarias
-    secondary_kw_section = ""
+    sec_kw = ""
     if secondary_keywords:
-        secondary_kw_section = "\n## KEYWORDS SECUNDARIAS\n"
-        for kw in secondary_keywords:
-            secondary_kw_section += f"- {kw}\n"
+        sec_kw = "\n## 🔑 KEYWORDS SECUNDARIAS\n" + "\n".join(f"- {k}" for k in secondary_keywords)
     
-    # Campos específicos del arquetipo
-    campos_section = ""
-    if campos_especificos:
-        campos_section = "\n## INFORMACIÓN ESPECÍFICA\n"
-        for key, value in campos_especificos.items():
-            if value:
-                campos_section += f"- {key}: {value}\n"
-    
-    # Contexto guía del usuario
-    guiding_section = ""
-    if guiding_context:
-        guiding_section = f"\n## CONTEXTO Y GUÍA DEL USUARIO\n{guiding_context}\n"
+    # Contexto guía
+    context = f"\n## 📖 CONTEXTO DEL USUARIO\n{guiding_context}\n" if guiding_context else ""
     
     # Producto alternativo
-    alt_product_section = ""
+    alt_prod = ""
     if alternative_product and alternative_product.get('url'):
-        alt_product_section = f"""
-## PRODUCTO ALTERNATIVO A MENCIONAR
-- URL: {alternative_product.get('url', '')}
-- Nombre: {alternative_product.get('name', '')}
-Incluye este producto de forma natural como alternativa en el contenido.
-"""
+        alt_prod = f"\n## 🔄 PRODUCTO ALTERNATIVO A MENCIONAR\n- {alternative_product.get('name', 'Alternativa')} ({alternative_product['url']})\n"
     
-    # Elementos visuales opcionales
-    elements_section = ""
-    if visual_elements:
-        elements_section = "\n## ELEMENTOS VISUALES A INCLUIR\n"
-        for elem in visual_elements:
-            if elem in ELEMENT_TEMPLATES:
-                elements_section += f"\n### {elem.upper()}\n```html\n{ELEMENT_TEMPLATES[elem]}\n```\n"
-    
-    prompt = f"""Eres un experto redactor SEO de PcComponentes, la tienda líder de tecnología en España.
+    # Construir prompt
+    prompt = f"""Eres un redactor SEO de PcComponentes, la tienda líder de tecnología en España.
 
 # TAREA
-Genera un BORRADOR de contenido tipo "{arquetipo_name}" para la keyword "{keyword}".
+Genera un BORRADOR tipo "{arquetipo_name}" para la keyword "{keyword}".
 
 {arquetipo_desc}
 
 ## PARÁMETROS
 - **Keyword principal:** {keyword}
-- **Longitud objetivo:** {target_length} palabras
+- **Longitud objetivo:** ~{target_length} palabras
 - **Tipo de contenido:** {arquetipo_name}
+
 {product_section}
+
+{tone_instructions}
+
+{data_instructions}
 {links_section}
-{secondary_kw_section}
-{campos_section}
-{guiding_section}
-{alt_product_section}
-{elements_section}
+{sec_kw}
+{context}
+{alt_prod}
 
 ## ESTRUCTURA HTML REQUERIDA
 
-**CRÍTICO: El HTML debe empezar con <style> y usar las clases CSS exactas.**
+El HTML debe empezar DIRECTAMENTE con <style>:
 
-```html
+```
 <style>
 {CSS_INLINE_MINIFIED}
 </style>
 
 <article class="contentGenerator__main">
-    <span class="kicker">TEXTO KICKER</span>
-    <h2>Título Principal con Keyword</h2>
+    <span class="kicker">KICKER ATRACTIVO</span>
+    <h2>Título que incluya {keyword}</h2>
     
     <nav class="toc">
         <p class="toc__title">En este artículo</p>
@@ -236,8 +323,8 @@ Genera un BORRADOR de contenido tipo "{arquetipo_name}" para la keyword "{keywor
     <h2>Preguntas frecuentes sobre {keyword}</h2>
     <div class="faqs">
         <div class="faqs__item">
-            <h3 class="faqs__question">¿Pregunta con {keyword}?</h3>
-            <p class="faqs__answer">Respuesta...</p>
+            <h3 class="faqs__question">¿Pregunta con keyword?</h3>
+            <p class="faqs__answer">Respuesta útil...</p>
         </div>
     </div>
 </article>
@@ -245,32 +332,28 @@ Genera un BORRADOR de contenido tipo "{arquetipo_name}" para la keyword "{keywor
 <article class="contentGenerator__verdict">
     <div class="verdict-box">
         <h2>Veredicto Final</h2>
-        <p>Conclusión...</p>
+        <p>Conclusión honesta que APORTE valor real, no un resumen...</p>
     </div>
 </article>
 ```
 
-## TONO DE MARCA PCCOMPONENTES
-- Expertos sin ser pedantes
-- Frikis sin vergüenza
-- Cercanos pero profesionales
-- Tuteamos al lector
-- Usamos analogías tech cuando aportan valor
-- Hablamos claro, no vendemos humo
-
 ## INSTRUCCIONES ADICIONALES
-{additional_instructions if additional_instructions else "(Ninguna)"}
+{additional_instructions or "(Ninguna)"}
 
 ---
 
-**REGLAS CRÍTICAS:**
-1. ❌ NO uses marcadores markdown como ```html o ```
-2. ✅ Genera SOLO el HTML directo, empezando con <style>
-3. ✅ El título de FAQs DEBE incluir la keyword: "Preguntas frecuentes sobre {keyword}"
-4. ✅ Usa ÚNICAMENTE los enlaces proporcionados, no inventes otros
-5. ✅ Incluye el bloque <style> con CSS al principio
+## ⚠️ REGLAS CRÍTICAS
+
+1. ❌ **NO** uses ```html ni marcadores markdown
+2. ✅ Empieza DIRECTAMENTE con `<style>`
+3. ✅ FAQs DEBEN incluir keyword: "Preguntas frecuentes sobre {keyword}"
+4. ✅ Si tienes datos de usuarios, ÚSALOS (ventajas/desventajas)
+5. ✅ SÉ HONESTO: si hay "peros", menciónalos
+6. ✅ **EVITA frases de IA:** "en el mundo actual", "sin lugar a dudas", etc.
+7. ✅ El veredicto debe APORTAR, no solo resumir
+
+**Genera el HTML ahora:**
 """
-    
     return prompt
 
 
@@ -286,102 +369,119 @@ def build_new_content_correction_prompt_stage2(
     alternative_product: Optional[Dict] = None,
 ) -> str:
     """
-    Construye el prompt para la Etapa 2: Análisis crítico del borrador.
+    Construye prompt para Etapa 2: Análisis crítico del borrador.
     
     Args:
-        draft_content: HTML del borrador a analizar
-        target_length: Longitud objetivo en palabras
+        draft_content: HTML del borrador generado en Stage 1
+        target_length: Longitud objetivo
         keyword: Keyword principal
-        links_to_verify: Enlaces que deberían estar en el contenido
-        alternative_product: Producto alternativo que debería mencionarse
+        links_to_verify: Enlaces que deben estar presentes
+        alternative_product: Producto alternativo que debe aparecer
+        
+    Returns:
+        Prompt para análisis
     """
-    # Construir sección de enlaces a verificar
-    links_verification = ""
+    links_check = ""
     if links_to_verify:
-        links_verification = "\n## 5. Enlaces\nVerifica que estos enlaces están incluidos:\n"
+        links_check = "\n## ENLACES A VERIFICAR\n"
         for link in links_to_verify:
-            url = link.get('url', '')
-            anchor = link.get('anchor', link.get('text', ''))
-            links_verification += f"- [{anchor}]({url})\n"
+            links_check += f"- [{link.get('anchor', '')}]({link.get('url', '')})\n"
     
-    # Construir sección de producto alternativo
-    alt_product_verification = ""
+    alt_check = ""
     if alternative_product and alternative_product.get('url'):
-        alt_product_verification = f"""
-## 6. Producto Alternativo
-Verifica que se menciona el producto alternativo:
-- URL: {alternative_product.get('url', '')}
-- Nombre: {alternative_product.get('name', '')}
-"""
+        alt_check = f"\n## PRODUCTO ALTERNATIVO QUE DEBE APARECER\n- {alternative_product.get('name', '')} ({alternative_product['url']})\n"
     
-    prompt = f"""Eres un editor SEO senior de PcComponentes. Tu tarea es ANALIZAR críticamente el siguiente borrador.
+    return f"""Eres un editor SEO senior de PcComponentes. Analiza críticamente este borrador.
 
 # BORRADOR A ANALIZAR
 
-{draft_content[:8000]}
+{draft_content[:12000]}
 
-# CRITERIOS DE EVALUACIÓN
+# PARÁMETROS
+- **Keyword:** {keyword}
+- **Longitud objetivo:** ~{target_length} palabras
+{links_check}
+{alt_check}
 
-## 1. Estructura CMS
-- ¿Tiene bloque <style> con :root y variables CSS?
-- ¿Tiene los 3 articles obligatorios? (main, faqs, verdict)
-- ¿Usa las clases CSS correctas?
-- ¿El kicker es un <span>, no un <div>?
-- ¿El título principal es H2?
-- ¿Tiene verdict-box?
+# CHECKLIST DE VERIFICACIÓN
 
-## 2. SEO
-- ¿La keyword "{keyword}" aparece de forma natural?
-- ¿El título de FAQs incluye la keyword?
-- ¿Densidad aproximada correcta (1-2%)?
-- ¿Hay heading stuffing?
+## 1. TONO DE MARCA PCCOMPONENTES
+- [ ] ¿Suena a PcComponentes? (cercano, experto, con chispa)
+- [ ] ¿Tutea al lector de forma natural?
+- [ ] ¿Es honesto sobre pros y contras?
+- [ ] ¿Tiene personalidad o suena genérico?
 
-## 3. Contenido
-- ¿La longitud es aproximadamente {target_length} palabras?
-- ¿El contenido es útil y completo?
-- ¿El tono es el de PcComponentes?
+## 2. ANTI-IA (CRÍTICO)
+- [ ] ¿Evita "En el mundo actual...", "Sin lugar a dudas..."?
+- [ ] ¿Evita adjetivos vacíos (increíble, revolucionario)?
+- [ ] ¿Varía la estructura de los párrafos?
+- [ ] ¿El veredicto aporta valor o solo resume?
 
-## 4. Formato
-- ¿Hay marcadores markdown (```html)?
-- ¿El HTML es válido?
-{links_verification}
-{alt_product_verification}
+## 3. ESTRUCTURA HTML
+- [ ] ¿Empieza con <style> (NO con ```html)?
+- [ ] ¿Tiene contentGenerator__main con kicker y toc?
+- [ ] ¿Tiene contentGenerator__faqs con keyword en título?
+- [ ] ¿Tiene contentGenerator__verdict con verdict-box?
 
-# FORMATO DE RESPUESTA
+## 4. SEO Y CONTENIDO
+- [ ] ¿La keyword aparece de forma natural?
+- [ ] ¿Los enlaces proporcionados están incluidos?
+- [ ] ¿La longitud es aproximada al objetivo?
 
-Responde SOLO con un JSON válido:
+---
+
+**Responde SOLO con JSON estructurado:**
 
 ```json
 {{
     "longitud_actual": 0,
     "longitud_objetivo": {target_length},
     "necesita_ajuste_longitud": false,
-    "tiene_css_root": false,
-    "tiene_verdict_box": false,
-    "tiene_callouts": false,
-    "faqs_incluye_keyword": false,
-    "tiene_markdown_wrapper": false,
-    "enlaces_presentes": [],
-    "enlaces_faltantes": [],
-    "producto_alternativo_mencionado": false,
-    "problemas_encontrados": [
+    
+    "estructura": {{
+        "tiene_style": false,
+        "tiene_main": false,
+        "tiene_faqs": false,
+        "tiene_verdict": false,
+        "faqs_incluye_keyword": false,
+        "tiene_markdown_wrapper": false
+    }},
+    
+    "tono": {{
+        "es_cercano": false,
+        "es_honesto": false,
+        "tiene_personalidad": false,
+        "evita_frases_ia": false,
+        "frases_ia_detectadas": []
+    }},
+    
+    "enlaces": {{
+        "presentes": [],
+        "faltantes": []
+    }},
+    
+    "problemas": [
         {{
-            "tipo": "estructura|seo|contenido|formato|enlaces",
+            "tipo": "estructura|seo|tono|formato",
             "severidad": "critico|alto|medio|bajo",
-            "descripcion": "Descripción del problema",
-            "solucion": "Cómo solucionarlo"
+            "descripcion": "...",
+            "solucion": "..."
         }}
     ],
+    
     "aspectos_positivos": [],
     "puntuacion_general": 0,
     "recomendacion_principal": ""
 }}
 ```
 
-**IMPORTANTE:** Responde ÚNICAMENTE con el JSON, sin texto adicional ni marcadores.
+**Responde ÚNICAMENTE con el JSON, sin texto adicional.**
 """
-    
-    return prompt
+
+
+# Alias de compatibilidad
+def build_correction_prompt_stage2(*args, **kwargs):
+    return build_new_content_correction_prompt_stage2(*args, **kwargs)
 
 
 # ============================================================================
@@ -397,73 +497,66 @@ def build_final_prompt_stage3(
     alternative_product: Optional[Dict] = None,
 ) -> str:
     """
-    Construye el prompt para la Etapa 3: Generación de la versión final.
-    
-    NOTA: Esta función tiene el nombre que app.py espera (build_final_prompt_stage3)
+    Construye prompt para Etapa 3: Versión final corregida.
     
     Args:
-        draft_content: HTML del borrador original
-        analysis_feedback: JSON con el análisis de la etapa 2
-        keyword: Keyword principal (NUEVO)
+        draft_content: HTML del borrador
+        analysis_feedback: Feedback del análisis (JSON o texto)
+        keyword: Keyword principal
         target_length: Longitud objetivo
-        links_data: Enlaces a incluir (NUEVO)
-        alternative_product: Producto alternativo (NUEVO)
+        links_data: Enlaces obligatorios
+        alternative_product: Producto alternativo
         
     Returns:
-        Prompt para la versión final
+        Prompt para generación final
     """
-    # Construir sección de enlaces obligatorios
     links_section = ""
     if links_data:
         links_section = "\n## ENLACES OBLIGATORIOS\n"
-        links_section += "**IMPORTANTE: Usa ÚNICAMENTE estos enlaces. NO inventes otros.**\n\n"
         for i, link in enumerate(links_data, 1):
-            url = link.get('url', '')
-            anchor = link.get('anchor', link.get('text', ''))
-            link_type = link.get('type', 'interno')
-            links_section += f"{i}. [{anchor}]({url}) - {link_type}\n"
+            links_section += f"{i}. [{link.get('anchor', '')}]({link.get('url', '')})\n"
     
-    # Producto alternativo
-    alt_product_section = ""
+    alt_section = ""
     if alternative_product and alternative_product.get('url'):
-        alt_product_section = f"""
-## PRODUCTO ALTERNATIVO A MENCIONAR
-- URL: {alternative_product.get('url', '')}
-- Nombre: {alternative_product.get('name', '')}
-Inclúyelo de forma natural en el contenido como alternativa.
-"""
+        alt_section = f"\n## PRODUCTO ALTERNATIVO\n- {alternative_product.get('name', '')} ({alternative_product['url']})\n"
     
-    prompt = f"""Eres un editor SEO senior de PcComponentes. Tu tarea es generar la VERSIÓN FINAL del contenido.
+    return f"""Genera la VERSIÓN FINAL corregida como editor SEO senior de PcComponentes.
 
 # BORRADOR ORIGINAL
 
-{draft_content[:8000]}
+{draft_content[:10000]}
 
-# ANÁLISIS Y CORRECCIONES
+# ANÁLISIS Y CORRECCIONES A APLICAR
 
-{analysis_feedback[:3000]}
+{analysis_feedback[:4000]}
 {links_section}
-{alt_product_section}
+{alt_section}
 
-# INSTRUCCIONES CRÍTICAS
+# RECORDATORIO DE TONO PCCOMPONENTES
 
-1. **Aplica TODAS las correcciones** del análisis
-2. **Ajusta la longitud** a ~{target_length} palabras
-3. **OBLIGATORIO - El HTML debe empezar con <style>:**
+- **Expertos sin pedantes:** Explica sin tecnicismos innecesarios
+- **Frikis sin vergüenza:** Referencias tech y humor cuando encaje
+- **Honestos pero no aburridos:** Si hay "peros", dilos
+- **Cercanos sin forzados:** Natural, no diminutivos ni emojis excesivos
 
-```html
+## ❌ EVITAR SIGNOS DE IA (CRÍTICO)
+- "En el mundo actual..." / "Sin lugar a dudas..."
+- Adjetivos vacíos: increíble, revolucionario, impresionante
+- El veredicto NO debe repetir lo ya dicho
+- Estructuras repetitivas párrafo tras párrafo
+
+# ESTRUCTURA FINAL REQUERIDA
+
+```
 <style>
 {CSS_INLINE_MINIFIED}
 </style>
-```
-
-4. **Estructura requerida:**
 
 <article class="contentGenerator__main">
     <span class="kicker">KICKER</span>
     <h2>Título con {keyword}</h2>
     <nav class="toc">...</nav>
-    <!-- Secciones -->
+    <section>...</section>
 </article>
 
 <article class="contentGenerator__faqs">
@@ -474,62 +567,35 @@ Inclúyelo de forma natural en el contenido como alternativa.
 <article class="contentGenerator__verdict">
     <div class="verdict-box">
         <h2>Veredicto Final</h2>
-        <p>...</p>
+        <p>Conclusión que APORTE valor real...</p>
     </div>
 </article>
+```
 
 ---
 
-**REGLAS ABSOLUTAS:**
-1. ❌ NUNCA uses marcadores markdown (```html, ```)
-2. ✅ Empieza DIRECTAMENTE con <style>
-3. ✅ El título de FAQs DEBE ser: "Preguntas frecuentes sobre {keyword}"
-4. ✅ Incluye el verdict-box obligatoriamente
-5. ✅ Usa SOLO los enlaces proporcionados
-6. ✅ Genera HTML válido y completo
+## ⚠️ REGLAS ABSOLUTAS
 
-**Genera SOLO el HTML final, sin explicaciones.**
+1. ❌ **NUNCA** uses ```html ni markdown
+2. ✅ Empieza DIRECTAMENTE con `<style>`
+3. ✅ Longitud aproximada: ~{target_length} palabras
+4. ✅ FAQs: "Preguntas frecuentes sobre {keyword}"
+5. ✅ Incluye verdict-box
+6. ✅ Aplica TODAS las correcciones del análisis
+7. ✅ Tono PcComponentes en cada párrafo
+
+**Genera SOLO el HTML final, sin explicaciones:**
 """
-    
-    return prompt
 
 
-# Alias para compatibilidad (nombre antiguo)
+# Alias de compatibilidad
 def build_final_generation_prompt_stage3(
     draft_content: str,
     corrections_json: str,
     target_length: int = 1500,
 ) -> str:
-    """
-    Alias de compatibilidad - Redirige a build_final_prompt_stage3
-    """
     return build_final_prompt_stage3(
-        draft_content=draft_content,
-        analysis_feedback=corrections_json,
-        keyword="",
-        target_length=target_length,
-        links_data=None,
-        alternative_product=None
-    )
-
-
-# Alias para compatibilidad con app.py (nombre corto)
-def build_correction_prompt_stage2(
-    draft_content: str,
-    target_length: int = 1500,
-    keyword: str = "",
-    links_to_verify: Optional[List[Dict]] = None,
-    alternative_product: Optional[Dict] = None,
-) -> str:
-    """
-    Alias de compatibilidad - Redirige a build_new_content_correction_prompt_stage2
-    """
-    return build_new_content_correction_prompt_stage2(
-        draft_content=draft_content,
-        target_length=target_length,
-        keyword=keyword,
-        links_to_verify=links_to_verify,
-        alternative_product=alternative_product
+        draft_content, corrections_json, "", target_length, None, None
     )
 
 
@@ -538,36 +604,23 @@ def build_correction_prompt_stage2(
 # ============================================================================
 
 def build_system_prompt() -> str:
-    """Genera el system prompt para todas las etapas."""
-    return """Eres un experto redactor y editor SEO de PcComponentes, la tienda líder de tecnología en España.
-
-Tu trabajo es crear contenido que:
-1. Sea útil y valioso para los usuarios
-2. Esté optimizado para SEO sin sobre-optimizar
-3. Siga el tono de marca de PcComponentes
-4. Cumpla con la estructura CMS requerida
-5. NUNCA use marcadores markdown en el HTML generado
-
-Tono de marca:
-- Expertos sin ser pedantes
-- Frikis sin vergüenza  
-- Cercanos pero profesionales
-- Tuteamos al lector
-- Usamos analogías tech cuando aportan valor
-- Hablamos claro, no vendemos humo
-
-IMPORTANTE: Cuando generes HTML, genera SOLO HTML puro sin envolverlo en ```html o similares.
-"""
+    """System prompt para todas las etapas."""
+    return get_system_prompt_base()
 
 
 def get_css_styles() -> str:
-    """Retorna el CSS minificado para incluir en el HTML."""
+    """Retorna el CSS minificado."""
     return CSS_INLINE_MINIFIED
 
 
-def get_element_template(element_name: str) -> str:
-    """Retorna la plantilla HTML para un elemento visual."""
-    return ELEMENT_TEMPLATES.get(element_name, "")
+def get_element_template(name: str) -> str:
+    """Retorna plantilla de elemento."""
+    templates = {
+        'callout': '<div class="callout"><p><strong>💡 Dato:</strong> [Contenido]</p></div>',
+        'verdict_box': '<div class="verdict-box"><h2>Veredicto Final</h2><p>[Conclusión]</p></div>',
+        'table': '<table><thead><tr><th>Característica</th><th>Valor</th></tr></thead><tbody><tr><td>...</td><td>...</td></tr></tbody></table>',
+    }
+    return templates.get(name, "")
 
 
 # ============================================================================
@@ -579,14 +632,13 @@ __all__ = [
     # Funciones principales
     'build_new_content_prompt_stage1',
     'build_new_content_correction_prompt_stage2',
-    'build_correction_prompt_stage2',  # Alias para app.py
-    'build_final_prompt_stage3',  # Nombre correcto para app.py
-    'build_final_generation_prompt_stage3',  # Alias de compatibilidad
+    'build_correction_prompt_stage2',
+    'build_final_prompt_stage3',
+    'build_final_generation_prompt_stage3',
     'build_system_prompt',
     # Utilidades
     'get_css_styles',
     'get_element_template',
     # Constantes
     'CSS_INLINE_MINIFIED',
-    'ELEMENT_TEMPLATES',
 ]
