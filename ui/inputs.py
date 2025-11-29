@@ -840,6 +840,12 @@ def render_content_inputs() -> Tuple[bool, Dict[str, Any]]:
     
     NOTA: El selector de modo está en app.py (render_app_header), NO aquí.
     Esta función solo maneja el modo 'new'. El modo 'rewrite' usa render_rewrite_section().
+    
+    NO incluye botón de generación - ese está en app.py para centralizar la lógica.
+    
+    Returns:
+        Tuple[bool, Dict]: (is_valid, config) donde is_valid indica si el formulario
+        está completo y config contiene los datos formateados.
     """
     # El modo siempre es 'new' aquí - app.py maneja el routing
     mode = 'new'
@@ -847,62 +853,55 @@ def render_content_inputs() -> Tuple[bool, Dict[str, Any]]:
     # Formulario principal
     form_data = render_main_form(mode=mode)
     
-    st.markdown("---")
-    col1, col2, col3 = st.columns([1, 2, 1])
-    with col2:
-        generate_clicked = st.button(
-            "🚀 Generar Contenido",
-            type="primary",
-            use_container_width=True,
-            disabled=(form_data is None)
-        )
+    # Si no hay datos válidos, retornar False
+    if form_data is None:
+        return False, {}
     
-    if form_data and generate_clicked:
-        # Formatear enlaces
-        internal_links_fmt = []
-        if form_data.internal_links:
-            for link in form_data.internal_links:
-                internal_links_fmt.append({
-                    'url': link.url,
-                    'anchor': link.anchor,
-                    'type': 'internal'
-                })
-        
-        pdp_links_fmt = []
-        if form_data.pdp_links:
-            for link in form_data.pdp_links:
-                pdp_links_fmt.append({
-                    'url': link.url,
-                    'anchor': link.anchor,
-                    'type': 'pdp'
-                })
-        
-        # Formatear contexto de preguntas
-        context_from_questions = ""
-        if form_data.guiding_answers:
-            parts = [f"**{q}**\n{a}" for q, a in form_data.guiding_answers.items()]
-            context_from_questions = "\n\n".join(parts)
-        
-        config = {
-            'keyword': form_data.keyword,
-            'pdp_url': form_data.pdp_url,
-            'target_length': form_data.target_length,
-            'arquetipo_codigo': form_data.arquetipo,
-            'mode': form_data.mode,
-            'competitor_urls': form_data.competitor_urls or [],
-            'internal_links': internal_links_fmt,
-            'pdp_links': pdp_links_fmt,
-            'additional_instructions': form_data.additional_instructions or '',
-            'guiding_context': context_from_questions,
-            'alternative_product': {
-                'url': form_data.alternative_product_url or '',
-                'name': form_data.alternative_product_name or ''
-            } if form_data.alternative_product_url else None,
-        }
-        
-        return True, config
+    # Formatear enlaces internos
+    internal_links_fmt = []
+    if form_data.internal_links:
+        for link in form_data.internal_links:
+            internal_links_fmt.append({
+                'url': link.url,
+                'anchor': link.anchor,
+                'type': 'internal'
+            })
     
-    return False, {}
+    # Formatear enlaces PDP
+    pdp_links_fmt = []
+    if form_data.pdp_links:
+        for link in form_data.pdp_links:
+            pdp_links_fmt.append({
+                'url': link.url,
+                'anchor': link.anchor,
+                'type': 'pdp'
+            })
+    
+    # Formatear contexto de preguntas guía
+    context_from_questions = ""
+    if form_data.guiding_answers:
+        parts = [f"**{q}**\n{a}" for q, a in form_data.guiding_answers.items()]
+        context_from_questions = "\n\n".join(parts)
+    
+    # Construir config
+    config = {
+        'keyword': form_data.keyword,
+        'pdp_url': form_data.pdp_url,
+        'target_length': form_data.target_length,
+        'arquetipo_codigo': form_data.arquetipo,
+        'mode': form_data.mode,
+        'competitor_urls': form_data.competitor_urls or [],
+        'internal_links': internal_links_fmt,
+        'pdp_links': pdp_links_fmt,
+        'additional_instructions': form_data.additional_instructions or '',
+        'guiding_context': context_from_questions,
+        'alternative_product': {
+            'url': form_data.alternative_product_url or '',
+            'name': form_data.alternative_product_name or ''
+        } if form_data.alternative_product_url else None,
+    }
+    
+    return True, config
 
 
 # ============================================================================
