@@ -521,30 +521,63 @@ def validate_response(content: str) -> Dict[str, Any]:
 
 
 def extract_html_content(content: str) -> str:
-    """Extrae el contenido HTML limpio de la respuesta."""
-    # Buscar bloque HTML entre ```html ... ```
-    html_match = re.search(r'```html\s*(.*?)\s*```', content, re.DOTALL | re.IGNORECASE)
+    """
+    Extrae el contenido HTML limpio de la respuesta.
+    
+    SIEMPRE limpia marcadores markdown como ```html, ``` etc.
+    
+    Args:
+        content: Contenido que puede contener HTML envuelto en markdown
+        
+    Returns:
+        HTML limpio sin marcadores markdown
+    """
+    if not content:
+        return ""
+    
+    # Paso 1: Limpiar espacios al inicio/final
+    content = content.strip()
+    
+    # Paso 2: Eliminar marcadores markdown al inicio
+    # Patrones comunes: ```html, ```HTML, ```xml, ```
+    markdown_start_patterns = [
+        r'^```html\s*\n?',
+        r'^```HTML\s*\n?',
+        r'^```xml\s*\n?',
+        r'^```\s*\n?',
+    ]
+    for pattern in markdown_start_patterns:
+        content = re.sub(pattern, '', content, flags=re.IGNORECASE)
+    
+    # Paso 3: Eliminar marcadores markdown al final
+    markdown_end_patterns = [
+        r'\n?```\s*$',
+        r'\n?```html\s*$',
+    ]
+    for pattern in markdown_end_patterns:
+        content = re.sub(pattern, '', content, flags=re.IGNORECASE)
+    
+    # Paso 4: Limpiar de nuevo espacios
+    content = content.strip()
+    
+    # Paso 5: Si todavía hay marcadores en medio, extraer el contenido
+    html_match = re.search(r'```(?:html)?\s*(.*?)\s*```', content, re.DOTALL | re.IGNORECASE)
     if html_match:
-        return html_match.group(1).strip()
+        content = html_match.group(1).strip()
     
-    # Buscar bloque entre ``` ... ```
-    code_match = re.search(r'```\s*(.*?)\s*```', content, re.DOTALL)
-    if code_match:
-        potential_html = code_match.group(1).strip()
-        if '<' in potential_html and '>' in potential_html:
-            return potential_html
-    
-    # Buscar desde <article> hasta </article>
-    article_match = re.search(r'(<article[^>]*>.*?</article>)', content, re.DOTALL | re.IGNORECASE)
-    if article_match:
-        return article_match.group(1).strip()
-    
-    # Buscar contenido entre tags HTML
-    if '<' in content and '>' in content:
+    # Paso 6: Verificar que empieza con tag HTML válido
+    # Si no empieza con <, buscar el primer <
+    if not content.startswith('<'):
         first_tag = content.find('<')
-        last_tag = content.rfind('>') + 1
-        if first_tag < last_tag:
-            return content[first_tag:last_tag].strip()
+        if first_tag > 0:
+            # Hay texto antes del HTML, lo eliminamos
+            content = content[first_tag:]
+    
+    # Paso 7: Verificar que termina con tag HTML
+    if content and not content.rstrip().endswith('>'):
+        last_tag = content.rfind('>')
+        if last_tag > 0:
+            content = content[:last_tag + 1]
     
     return content.strip()
 
