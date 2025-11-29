@@ -200,7 +200,23 @@ except ImportError:
         return len(text.split())
     
     def extract_html_content(content: str) -> str:
-        return content
+        """Fallback: Extrae HTML limpio eliminando marcadores markdown."""
+        import re
+        if not content:
+            return ""
+        content = content.strip()
+        # Eliminar ```html al inicio
+        content = re.sub(r'^```html\s*\n?', '', content, flags=re.IGNORECASE)
+        content = re.sub(r'^```\s*\n?', '', content)
+        # Eliminar ``` al final
+        content = re.sub(r'\n?```\s*$', '', content)
+        content = content.strip()
+        # Verificar que empieza con <
+        if not content.startswith('<'):
+            first_tag = content.find('<')
+            if first_tag > 0:
+                content = content[first_tag:]
+        return content.strip()
 
 
 # ============================================================================
@@ -736,7 +752,7 @@ def render_refinement_section() -> None:
 
 def execute_refinement(refine_prompt: str) -> None:
     """
-    Ejecuta el refinamiento del contenido.
+    Ejecuta el refinamiento del contenido con feedback detallado.
     
     Args:
         refine_prompt: Instrucciones de refinamiento del usuario
@@ -746,23 +762,36 @@ def execute_refinement(refine_prompt: str) -> None:
         st.error("❌ El generador de contenido no está disponible")
         return
     
-    with st.spinner("✨ Refinando contenido..."):
+    # Contenedor para progreso
+    progress_container = st.container()
+    
+    with progress_container:
+        # Barra de progreso
+        progress_bar = st.progress(0, text="Iniciando refinamiento...")
+        status_text = st.empty()
+        
         try:
-            # Construir prompt de refinamiento
+            # Paso 1: Preparación (10%)
+            progress_bar.progress(10, text="📋 Analizando contenido actual...")
+            status_text.info("Preparando el contenido para refinamiento...")
+            
             current_content = st.session_state.final_html
             current_word_count = count_words_in_html(current_content)
             
-            # Prompt completo con system incluido
+            # Paso 2: Construir prompt (20%)
+            progress_bar.progress(20, text="📝 Construyendo instrucciones...")
+            
             refinement_prompt = f"""Eres un editor experto en contenido SEO para PcComponentes.
 Tu tarea es refinar el contenido existente según las instrucciones del usuario.
 
 REGLAS:
-1. Mantén el formato HTML válido
-2. Preserva los enlaces internos existentes
+1. Mantén el formato HTML válido y las clases CSS
+2. Preserva TODOS los enlaces internos existentes
 3. Mantén aproximadamente la misma longitud ({current_word_count} palabras ±10%)
 4. Mejora según las instrucciones sin perder información valiosa
 5. Mantén el tono de marca PcComponentes (experto, cercano, confiable)
 6. NO uses frases negativas como "evita este producto" - usa alternativas positivas
+7. NO uses marcadores markdown (```html)
 
 ---
 
@@ -776,10 +805,20 @@ INSTRUCCIONES DE REFINAMIENTO:
 
 ---
 
-Genera el contenido refinado aplicando los cambios solicitados. 
-Responde SOLO con el HTML mejorado, sin explicaciones adicionales."""
+IMPORTANTE: 
+1. Al finalizar, lista los CAMBIOS REALIZADOS en un comentario HTML al final:
+<!-- CAMBIOS_REALIZADOS:
+- Cambio 1
+- Cambio 2
+-->
 
-            # Crear generador y ejecutar
+2. Genera el contenido refinado aplicando los cambios solicitados.
+3. Responde SOLO con el HTML mejorado (empezando con <style> o <article>)."""
+
+            # Paso 3: Generar (30-80%)
+            progress_bar.progress(30, text="🤖 Claude está refinando el contenido...")
+            status_text.info("Generando versión refinada...")
+            
             generator = ContentGenerator(
                 api_key=CLAUDE_API_KEY,
                 model=CLAUDE_MODEL,
@@ -787,10 +826,15 @@ Responde SOLO con el HTML mejorado, sin explicaciones adicionales."""
                 temperature=TEMPERATURE
             )
             
-            # CORRECCIÓN: generator.generate() retorna GenerationResult
+            # Actualizar progreso durante la generación
+            progress_bar.progress(50, text="🤖 Procesando refinamiento...")
+            
             result = generator.generate(refinement_prompt)
             
+            progress_bar.progress(80, text="✅ Procesando resultado...")
+            
             if not result.success:
+                progress_bar.progress(100, text="❌ Error en refinamiento")
                 st.error(f"❌ Error en refinamiento: {result.error}")
                 return
             
@@ -798,8 +842,22 @@ Responde SOLO con el HTML mejorado, sin explicaciones adicionales."""
             
             # Validar resultado
             if not refined_content or len(refined_content) < 100:
+                progress_bar.progress(100, text="❌ Contenido inválido")
                 st.error("❌ El contenido refinado está vacío o es muy corto")
                 return
+            
+            # Paso 4: Procesar resultado (90%)
+            progress_bar.progress(90, text="📊 Analizando cambios...")
+            
+            # Extraer comentario de cambios si existe
+            import re
+            changes_match = re.search(r'<!-- CAMBIOS_REALIZADOS:(.*?)-->', refined_content, re.DOTALL)
+            changes_list = []
+            if changes_match:
+                changes_text = changes_match.group(1).strip()
+                changes_list = [line.strip().lstrip('- ') for line in changes_text.split('\n') if line.strip()]
+                # Eliminar el comentario del HTML final
+                refined_content = re.sub(r'<!-- CAMBIOS_REALIZADOS:.*?-->', '', refined_content, flags=re.DOTALL)
             
             # Guardar versión anterior en historial
             st.session_state.content_history.append({
@@ -808,26 +866,54 @@ Responde SOLO con el HTML mejorado, sin explicaciones adicionales."""
                 'word_count': current_word_count
             })
             
-            # Actualizar contenido
+            # Limpiar y actualizar contenido
             st.session_state.final_html = extract_html_content(refined_content)
             
-            # Mostrar métricas
-            new_word_count = count_words_in_html(st.session_state.final_html)
+            # Paso 5: Completado (100%)
+            progress_bar.progress(100, text="✅ Refinamiento completado")
+            status_text.empty()
             
-            col1, col2, col3 = st.columns(3)
-            with col1:
-                st.metric("Palabras antes", current_word_count)
-            with col2:
-                st.metric("Palabras después", new_word_count)
-            with col3:
-                diff = new_word_count - current_word_count
-                st.metric("Diferencia", f"{diff:+d}")
+            # Mostrar métricas de cambio
+            new_word_count = count_words_in_html(st.session_state.final_html)
+            diff = new_word_count - current_word_count
             
             st.success("✅ Contenido refinado correctamente")
+            
+            # Métricas en columnas
+            col1, col2, col3 = st.columns(3)
+            with col1:
+                st.metric("📝 Palabras antes", current_word_count)
+            with col2:
+                st.metric("📝 Palabras después", new_word_count)
+            with col3:
+                delta_color = "normal" if abs(diff) < current_word_count * 0.1 else "inverse"
+                st.metric("📊 Diferencia", f"{diff:+d}", delta_color=delta_color)
+            
+            # Mostrar cambios realizados
+            if changes_list:
+                with st.expander("📋 Cambios realizados", expanded=True):
+                    st.markdown("**El refinamiento ha aplicado los siguientes cambios:**")
+                    for i, change in enumerate(changes_list, 1):
+                        if change:  # Ignorar líneas vacías
+                            st.markdown(f"✅ {change}")
+            else:
+                with st.expander("📋 Resumen del refinamiento", expanded=True):
+                    st.markdown(f"""
+**Instrucciones aplicadas:** {refine_prompt}
+
+**Resultado:**
+- Longitud ajustada de {current_word_count} a {new_word_count} palabras
+- Diferencia: {diff:+d} palabras ({diff/current_word_count*100:+.1f}%)
+""")
+            
+            # Rerun para actualizar la vista
+            import time
+            time.sleep(1)  # Pequeña pausa para que el usuario vea el feedback
             st.rerun()
             
         except Exception as e:
             logger.error(f"Error en refinamiento: {e}")
+            progress_bar.progress(100, text="❌ Error")
             st.error(f"❌ Error: {str(e)}")
 
 
@@ -979,9 +1065,10 @@ Formato tu respuesta de manera clara y accionable."""
                         pdp_data=config.get('pdp_data'),
                         links_data=config.get('links', config.get('internal_links', [])),  # links_data, NO links
                         secondary_keywords=config.get('keywords', []),  # secondary_keywords, NO keywords
-                        additional_instructions=config.get('objetivo', ''),
+                        additional_instructions=config.get('objetivo', config.get('additional_instructions', '')),
                         campos_especificos=config.get('campos_arquetipo', {}),  # campos_especificos, NO campos_arquetipo
-                        guiding_context=config.get('context', config.get('guiding_context', '')),  # guiding_context, NO context
+                        visual_elements=config.get('visual_elements', []),  # AÑADIDO: Elementos visuales
+                        guiding_context=config.get('context', config.get('guiding_context', '')),  # guiding_context
                         alternative_product=config.get('producto_alternativo', config.get('alternative_product'))  # alternative_product
                     )
                 else:  # mode == 'rewrite'
