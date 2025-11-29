@@ -389,6 +389,7 @@ def render_product_url_with_fetch(
 ) -> Tuple[str, Optional[Dict[str, Any]], Optional[str]]:
     """
     Renderiza input de URL de producto con botón para obtener datos via n8n.
+    Permite introducir el ID manualmente si la extracción automática falla.
     
     Args:
         key: Clave única para el widget
@@ -402,28 +403,38 @@ def render_product_url_with_fetch(
     if state_key not in st.session_state:
         st.session_state[state_key] = None
     
-    col1, col2 = st.columns([3, 1])
+    # URL del producto
+    saved_value = get_form_value('pdp_url', '')
+    url = st.text_input(
+        label="🔗 URL del Producto",
+        value=saved_value,
+        key=f"{key}_url",
+        placeholder="https://www.pccomponentes.com/...",
+        help="Pega la URL de un producto de PcComponentes"
+    )
+    
+    # ID manual (opcional) y botón en la misma fila
+    col1, col2 = st.columns([2, 1])
     
     with col1:
-        saved_value = get_form_value('pdp_url', '')
-        url = st.text_input(
-            label="🔗 URL del Producto",
-            value=saved_value,
-            key=f"{key}_url",
-            placeholder="https://www.pccomponentes.com/...",
-            help="Pega la URL de un producto de PcComponentes"
+        manual_id = st.text_input(
+            label="🔢 ID del producto (opcional)",
+            value="",
+            key=f"{key}_manual_id",
+            placeholder="Ej: 6917499",
+            help="Si la extracción automática falla, introduce el ID manualmente. Lo encuentras en la URL del producto."
         )
     
     with col2:
         st.markdown("<br>", unsafe_allow_html=True)  # Espaciado
-        fetch_disabled = not url or not _n8n_available
+        fetch_disabled = (not url and not manual_id) or not _n8n_available
         
         # Tooltip si n8n no está disponible
         button_help = None
         if not _n8n_available:
             button_help = "Configura N8N_WEBHOOK_URL en secrets"
-        elif not url:
-            button_help = "Introduce una URL primero"
+        elif not url and not manual_id:
+            button_help = "Introduce una URL o ID primero"
         
         if st.button("📥 Obtener datos", key=f"{key}_fetch", disabled=fetch_disabled, help=button_help):
             with st.spinner("Obteniendo datos del producto..."):
@@ -436,7 +447,12 @@ def render_product_url_with_fetch(
                         except Exception:
                             secrets_dict = {}
                     
-                    success, product_data, error = fetch_product_for_streamlit(url, secrets_dict)
+                    # Usar ID manual si está presente, sino intentar con URL
+                    success, product_data, error = fetch_product_for_streamlit(
+                        url=url or "",
+                        secrets=secrets_dict,
+                        manual_id=manual_id.strip() if manual_id else None
+                    )
                     
                     if success:
                         st.session_state[state_key] = product_data
