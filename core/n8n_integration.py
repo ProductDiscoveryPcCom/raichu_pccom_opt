@@ -378,8 +378,21 @@ def fetch_product_for_streamlit(
     api_token = None
     
     if secrets:
-        webhook_url = secrets.get('N8N_WEBHOOK_URL') or secrets.get('n8n', {}).get('webhook_url')
-        api_token = secrets.get('CATALOG_API_TOKEN') or secrets.get('catalog', {}).get('api_token')
+        # Buscar N8N_WEBHOOK_URL en múltiples ubicaciones posibles
+        webhook_url = (
+            secrets.get('N8N_WEBHOOK_URL') or  # Nivel raíz
+            secrets.get('n8n_webhook_url') or  # Nivel raíz minúsculas
+            secrets.get('n8n', {}).get('N8N_WEBHOOK_URL') or  # Dentro de [n8n]
+            secrets.get('n8n', {}).get('webhook_url') or  # Dentro de [n8n] minúsculas
+            secrets.get('n8n', {}).get('url')  # Alternativa corta
+        )
+        api_token = (
+            secrets.get('CATALOG_API_TOKEN') or 
+            secrets.get('catalog', {}).get('api_token')
+        )
+    
+    if not webhook_url:
+        return False, {}, "Configuración requerida: N8N_WEBHOOK_URL en los secrets de Streamlit"
     
     # Si hay ID manual, usarlo directamente
     url_or_id = manual_id if manual_id else url
