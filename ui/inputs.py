@@ -1,11 +1,12 @@
 # -*- coding: utf-8 -*-
 """
 UI Inputs - PcComponentes Content Generator
-Versión 4.5.0
+Versión 4.5.1
 
 Componentes de entrada para la interfaz Streamlit.
 Incluye: validación, anchor text, preguntas guía, producto alternativo,
-fecha GSC, análisis de canibalización, campo HTML para reescritura.
+fecha GSC, análisis de canibalización, campo HTML para reescritura,
+integración con n8n para obtener datos de producto.
 
 Autor: PcComponentes - Product Discovery & Content
 """
@@ -19,6 +20,18 @@ from urllib.parse import urlparse
 from datetime import datetime
 
 import streamlit as st
+
+# Importar integración con n8n (opcional)
+try:
+    from core.n8n_integration import fetch_product_for_streamlit
+    _n8n_available = True
+except ImportError:
+    try:
+        from n8n_integration import fetch_product_for_streamlit
+        _n8n_available = True
+    except ImportError:
+        _n8n_available = False
+        fetch_product_for_streamlit = None
 
 logger = logging.getLogger(__name__)
 
@@ -190,6 +203,7 @@ class FormData:
     """Datos del formulario completo."""
     keyword: str
     pdp_url: Optional[str] = None
+    pdp_data: Optional[Dict[str, Any]] = None  # Datos del producto obtenidos via n8n
     target_length: int = DEFAULT_CONTENT_LENGTH
     arquetipo: str = 'ARQ-1'
     mode: str = 'new'
@@ -200,6 +214,7 @@ class FormData:
     guiding_answers: Optional[Dict[str, str]] = None
     alternative_product_url: Optional[str] = None
     alternative_product_name: Optional[str] = None
+    visual_elements: Optional[List[str]] = None  # Elementos visuales seleccionados
 
 
 # ============================================================================
@@ -366,6 +381,107 @@ def render_url_input(
     elif required:
         return "", "La URL es obligatoria"
     return "", None
+
+
+def render_product_url_with_fetch(
+    key: str = "product_url",
+    required: bool = False
+) -> Tuple[str, Optional[Dict[str, Any]], Optional[str]]:
+    """
+    Renderiza input de URL de producto con botón para obtener datos via n8n.
+    
+    Args:
+        key: Clave única para el widget
+        required: Si la URL es obligatoria
+        
+    Returns:
+        Tuple[url, product_data, error]
+    """
+    # Inicializar estado
+    state_key = f"pdp_data_{key}"
+    if state_key not in st.session_state:
+        st.session_state[state_key] = None
+    
+    col1, col2 = st.columns([3, 1])
+    
+    with col1:
+        saved_value = get_form_value('pdp_url', '')
+        url = st.text_input(
+            label="🔗 URL del Producto",
+            value=saved_value,
+            key=f"{key}_url",
+            placeholder="https://www.pccomponentes.com/...",
+            help="Pega la URL de un producto de PcComponentes"
+        )
+    
+    with col2:
+        st.markdown("<br>", unsafe_allow_html=True)  # Espaciado
+        fetch_disabled = not url or not _n8n_available
+        
+        # Tooltip si n8n no está disponible
+        button_help = None
+        if not _n8n_available:
+            button_help = "Configura N8N_WEBHOOK_URL en secrets"
+        elif not url:
+            button_help = "Introduce una URL primero"
+        
+        if st.button("📥 Obtener datos", key=f"{key}_fetch", disabled=fetch_disabled, help=button_help):
+            with st.spinner("Obteniendo datos del producto..."):
+                try:
+                    # Obtener secrets de Streamlit
+                    secrets_dict = {}
+                    if hasattr(st, 'secrets'):
+                        try:
+                            secrets_dict = dict(st.secrets)
+                        except Exception:
+                            secrets_dict = {}
+                    
+                    success, product_data, error = fetch_product_for_streamlit(url, secrets_dict)
+                    
+                    if success:
+                        st.session_state[state_key] = product_data
+                        st.success(f"✅ Datos obtenidos: {product_data.get('name', 'Producto')}")
+                    else:
+                        st.error(f"❌ {error}")
+                        st.session_state[state_key] = None
+                except Exception as e:
+                    st.error(f"❌ Error: {str(e)}")
+                    st.session_state[state_key] = None
+    
+    # Validar URL
+    error = None
+    if url:
+        result = validate_url(url, require_pccomponentes=True)
+        if not result.is_valid:
+            st.error(f"❌ {result.error}")
+            error = result.error
+        else:
+            save_form_data({'pdp_url': result.value})
+            url = result.value
+    elif required:
+        error = "La URL es obligatoria"
+    
+    # Mostrar datos obtenidos
+    product_data = st.session_state.get(state_key)
+    if product_data:
+        with st.expander("📦 Datos del producto", expanded=True):
+            col_a, col_b = st.columns(2)
+            with col_a:
+                st.markdown(f"**Nombre:** {product_data.get('name', 'N/A')}")
+                st.markdown(f"**Marca:** {product_data.get('brand', 'N/A')}")
+            with col_b:
+                price = product_data.get('price_formatted') or product_data.get('price', 'N/A')
+                st.markdown(f"**Precio:** {price}")
+                st.markdown(f"**ID:** {product_data.get('legacy_id', 'N/A')}")
+            
+            # Atributos
+            attrs = product_data.get('attributes', {})
+            if attrs:
+                st.markdown("**Características:**")
+                for attr_name, attr_value in list(attrs.items())[:5]:
+                    st.markdown(f"- {attr_name}: {attr_value}")
+    
+    return url or "", product_data, error
 
 
 def render_length_slider(
@@ -724,6 +840,99 @@ def render_additional_instructions(key: str = "additional_instructions") -> str:
     return instructions.strip() if instructions else ""
 
 
+def render_visual_elements_selector(key_prefix: str = "visual_elem") -> List[str]:
+    """
+    Renderiza checkboxes para seleccionar elementos visuales a incluir.
+    
+    Args:
+        key_prefix: Prefijo para las keys de los checkboxes
+        
+    Returns:
+        Lista de elementos visuales seleccionados
+    """
+    st.markdown("**Selecciona los elementos visuales a incluir:**")
+    st.caption("Estos elementos se generarán con los estilos CSS de PcComponentes")
+    
+    # Definir elementos disponibles con descripción
+    elements_config = {
+        'toc': {
+            'label': '📑 Tabla de Contenidos (TOC)',
+            'description': 'Navegación interna del artículo',
+            'default': True
+        },
+        'table': {
+            'label': '📊 Tabla Comparativa',
+            'description': 'Tabla para comparar productos o características',
+            'default': False
+        },
+        'callout': {
+            'label': '💡 Callouts/Destacados',
+            'description': 'Cajas de información destacada',
+            'default': False
+        },
+        'callout_bf': {
+            'label': '🔥 Callout Black Friday',
+            'description': 'Caja especial para ofertas BF/CM',
+            'default': False
+        },
+        'verdict_box': {
+            'label': '✅ Verdict Box',
+            'description': 'Caja de veredicto final con estilo premium',
+            'default': True
+        },
+        'grid': {
+            'label': '📐 Grid Layout',
+            'description': 'Distribución en rejilla para productos',
+            'default': False
+        },
+    }
+    
+    selected_elements = []
+    
+    # Crear checkboxes en 2 columnas
+    col1, col2 = st.columns(2)
+    
+    elements_list = list(elements_config.items())
+    
+    for i, (elem_id, elem_config) in enumerate(elements_list):
+        target_col = col1 if i % 2 == 0 else col2
+        with target_col:
+            is_selected = st.checkbox(
+                elem_config['label'],
+                value=elem_config['default'],
+                key=f"{key_prefix}_{elem_id}",
+                help=elem_config['description']
+            )
+            if is_selected:
+                selected_elements.append(elem_id)
+    
+    # Mostrar preview de elementos seleccionados
+    if selected_elements:
+        with st.expander("👁️ Preview de estilos seleccionados", expanded=False):
+            for elem in selected_elements:
+                st.markdown(f"**{elements_config[elem]['label']}**")
+                if elem == 'toc':
+                    st.code('''<nav class="toc">
+    <p class="toc__title">En este artículo</p>
+    <ol class="toc__list">...</ol>
+</nav>''', language="html")
+                elif elem == 'table':
+                    st.code('''<table>
+    <thead><tr><th>Columna 1</th><th>Columna 2</th></tr></thead>
+    <tbody><tr><td>Dato 1</td><td>Dato 2</td></tr></tbody>
+</table>''', language="html")
+                elif elem == 'callout':
+                    st.code('<div class="callout"><p><strong>💡 Importante:</strong> ...</p></div>', language="html")
+                elif elem == 'callout_bf':
+                    st.code('<div class="callout-bf"><p>🔥 <strong>OFERTA BLACK FRIDAY</strong> 🔥</p></div>', language="html")
+                elif elem == 'verdict_box':
+                    st.code('<div class="verdict-box"><h2>Veredicto Final</h2><p>...</p></div>', language="html")
+                elif elem == 'grid':
+                    st.code('<div class="grid-layout"><div class="grid-item">...</div></div>', language="html")
+    
+    return selected_elements
+
+
 # ============================================================================
 # VALIDACIÓN DE ERRORES COMPACTA
 # ============================================================================
@@ -767,7 +976,8 @@ def render_main_form(mode: str = "new") -> Optional[FormData]:
         arquetipo = render_arquetipo_selector(key="main_arquetipo")
     
     with col2:
-        pdp_url, url_error = render_url_input(key="main_pdp_url", required=False)
+        # URL del producto con botón para obtener datos via n8n
+        pdp_url, pdp_data, url_error = render_product_url_with_fetch(key="main_pdp", required=False)
         if url_error:
             errors.append(url_error)
         
@@ -808,6 +1018,10 @@ def render_main_form(mode: str = "new") -> Optional[FormData]:
     with st.expander("📝 Instrucciones Adicionales", expanded=False):
         additional_instructions = render_additional_instructions(key="main_instructions")
     
+    # Elementos visuales (checkboxes)
+    with st.expander("🎨 Elementos Visuales", expanded=False):
+        visual_elements = render_visual_elements_selector(key_prefix="main_visual")
+    
     # Mostrar errores de forma compacta
     if errors:
         render_validation_errors(errors)
@@ -816,6 +1030,7 @@ def render_main_form(mode: str = "new") -> Optional[FormData]:
     return FormData(
         keyword=keyword,
         pdp_url=pdp_url or None,
+        pdp_data=pdp_data,  # Datos del producto obtenidos via n8n
         target_length=target_length,
         arquetipo=arquetipo,
         mode=mode,
@@ -825,7 +1040,8 @@ def render_main_form(mode: str = "new") -> Optional[FormData]:
         additional_instructions=additional_instructions or None,
         guiding_answers=guiding_answers or None,
         alternative_product_url=alt_url,
-        alternative_product_name=alt_name
+        alternative_product_name=alt_name,
+        visual_elements=visual_elements or None
     )
 
 
@@ -884,21 +1100,27 @@ def render_content_inputs() -> Tuple[bool, Dict[str, Any]]:
         context_from_questions = "\n\n".join(parts)
     
     # Construir config
+    # Combinar todos los enlaces en una lista única para el prompt
+    all_links = internal_links_fmt + pdp_links_fmt
+    
     config = {
         'keyword': form_data.keyword,
         'pdp_url': form_data.pdp_url,
+        'pdp_data': form_data.pdp_data,  # Datos del producto obtenidos via n8n
         'target_length': form_data.target_length,
         'arquetipo_codigo': form_data.arquetipo,
         'mode': form_data.mode,
         'competitor_urls': form_data.competitor_urls or [],
         'internal_links': internal_links_fmt,
         'pdp_links': pdp_links_fmt,
+        'links': all_links,  # Lista combinada para el prompt
         'additional_instructions': form_data.additional_instructions or '',
         'guiding_context': context_from_questions,
         'alternative_product': {
             'url': form_data.alternative_product_url or '',
             'name': form_data.alternative_product_name or ''
         } if form_data.alternative_product_url else None,
+        'visual_elements': form_data.visual_elements or [],  # Elementos visuales seleccionados
     }
     
     return True, config
