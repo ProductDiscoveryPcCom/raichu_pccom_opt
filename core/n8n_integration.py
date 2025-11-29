@@ -359,14 +359,16 @@ def get_product_data(
 
 def fetch_product_for_streamlit(
     url: str,
-    secrets: Optional[Dict] = None
+    secrets: Optional[Dict] = None,
+    manual_id: Optional[str] = None
 ) -> Tuple[bool, Dict[str, Any], str]:
     """
     Función wrapper para uso en Streamlit.
     
     Args:
-        url: URL del producto
+        url: URL del producto (se guarda para enlazar en el contenido)
         secrets: st.secrets o dict con configuración
+        manual_id: ID del producto introducido manualmente (opcional)
         
     Returns:
         Tuple[success, product_dict, error_message]
@@ -379,14 +381,20 @@ def fetch_product_for_streamlit(
         webhook_url = secrets.get('N8N_WEBHOOK_URL') or secrets.get('n8n', {}).get('webhook_url')
         api_token = secrets.get('CATALOG_API_TOKEN') or secrets.get('catalog', {}).get('api_token')
     
+    # Si hay ID manual, usarlo directamente
+    url_or_id = manual_id if manual_id else url
+    
     success, product, error = get_product_data(
-        url_or_id=url,
+        url_or_id=url_or_id,
         n8n_webhook_url=webhook_url,
         catalog_api_token=api_token
     )
     
     if success and product:
-        return True, product.to_dict(), ""
+        product_dict = product.to_dict()
+        # Guardar la URL original para usar en enlaces
+        product_dict['url'] = url
+        return True, product_dict, ""
     else:
         return False, {}, error
 
