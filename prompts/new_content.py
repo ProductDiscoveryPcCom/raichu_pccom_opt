@@ -9,7 +9,7 @@ CARACTERÍSTICAS:
 - Funciona igual de bien CON o SIN datos de producto
 - CON datos: usa ventajas/desventajas/opiniones para contenido auténtico
 - SIN datos: instrucciones alternativas basadas en conocimiento general
-- Tono de marca PcComponentes integrado (desde brand_tone.py)
+- Tono de marca PcComponentes integrado (desde config/brand.py)
 - Instrucciones anti-IA para evitar patrones artificiales
 
 CAMPOS DE PRODUCTO SOPORTADOS (del Dict pdp_data):
@@ -32,14 +32,14 @@ from typing import Dict, List, Optional, Any
 
 __version__ = "4.8.0"
 
-# Importar constantes de tono
+# Importar constantes de tono desde config.brand (existente)
 try:
-    from prompts.brand_tone import get_tone_instructions, get_system_prompt_base
+    from config.brand import get_tone_instructions, get_system_prompt_base
 except ImportError:
     try:
-        from brand_tone import get_tone_instructions, get_system_prompt_base
+        from brand import get_tone_instructions, get_system_prompt_base
     except ImportError:
-        # Fallback inline si no existe el módulo
+        # Fallback inline si no existen las funciones
         def get_tone_instructions(has_product_data: bool = False) -> str:
             return ""
         def get_system_prompt_base() -> str:
