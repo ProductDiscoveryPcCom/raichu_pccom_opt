@@ -10,6 +10,8 @@ CORRECCIONES v4.5.0:
 - Parámetros correctos (secondary_keywords, guiding_context, links_data)
 - GenerationResult.content en lugar de asignar GenerationResult a str
 - Análisis competitivo inline (build_competitor_analysis_prompt no existe)
+- ✅ NUEVA: Validaciones de entrada en execute_generation_pipeline() (líneas 1009-1025)
+- ✅ NUEVA: Safe access a config['keyword'] en modo rewrite (línea 1181)
 
 Autor: PcComponentes - Product Discovery & Content
 """
@@ -945,7 +947,35 @@ def execute_generation_pipeline(config: Dict[str, Any], mode: str = 'new') -> No
     Args:
         config: Configuración de generación
         mode: 'new' para nuevo contenido, 'rewrite' para reescritura
+    
+    Raises:
+        TypeError: Si config no es dict o mode no es string
+        ValueError: Si mode no es 'new' o 'rewrite'
+        ValueError: Si faltan keys requeridas en config
     """
+    
+    # ========================================================================
+    # ✅ CAMBIO 1: VALIDACIONES AÑADIDAS (LÍNEAS 1009-1025)
+    # ========================================================================
+    # Validar tipos
+    if not isinstance(config, dict):
+        raise TypeError(f"config debe ser dict, recibido: {type(config).__name__}")
+    
+    if not isinstance(mode, str):
+        raise TypeError(f"mode debe ser string, recibido: {type(mode).__name__}")
+    
+    # Validar mode
+    if mode not in ['new', 'rewrite']:
+        raise ValueError(f"mode debe ser 'new' o 'rewrite', recibido: '{mode}'")
+    
+    # Validar keys requeridas
+    required_keys = ['keyword', 'target_length', 'arquetipo_codigo']
+    missing = [k for k in required_keys if k not in config]
+    if missing:
+        raise ValueError(f"Config incompleto. Faltan keys: {missing}")
+    # ========================================================================
+    # FIN VALIDACIONES AÑADIDAS
+    # ========================================================================
     
     if ContentGenerator is None:
         st.error("❌ ContentGenerator no está disponible")
@@ -1091,13 +1121,19 @@ CONTENIDO ACTUAL A MEJORAR/REESCRIBIR:
 Usa este contenido como base, mejóralo y amplíalo según el análisis competitivo.
 """
                     
+                    # ============================================================
+                    # ✅ CAMBIO 2: SAFE ACCESS A CONFIG (LÍNEA 1181)
+                    # ============================================================
+                    # ANTES: keyword=config['keyword'],  ❌ Puede causar KeyError
+                    # AHORA: keyword=config.get('keyword', ''),  ✅ Safe access
+                    # ============================================================
                     # CORRECCIÓN: Usar nombre correcto (build_rewrite_prompt_stage1, NO _draft)
                     stage1_prompt = rewrite.build_rewrite_prompt_stage1(
-                        keyword=config['keyword'],
+                        keyword=config.get('keyword', ''),
                         competitor_analysis=st.session_state.get('rewrite_analysis', ''),
                         pdp_data=config.get('pdp_data'),
                         target_length=config.get('target_length', 1500),
-                        keywords=config.get('keywords', [config['keyword']]),  # Aquí SÍ es keywords
+                        keywords=config.get('keywords', [config.get('keyword', '')]),  # Aquí SÍ es keywords
                         context=context_with_html,  # Aquí SÍ es context
                         links=config.get('links', {}),  # Aquí SÍ es links
                         objetivo=config.get('objetivo', ''),
