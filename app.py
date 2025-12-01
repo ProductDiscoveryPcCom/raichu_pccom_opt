@@ -1,9 +1,13 @@
 """
 PcComponentes Content Generator - App Principal
-Versión 4.9.0
+Versión 4.9.1
 
 Aplicación Streamlit para generación de contenido SEO.
 Flujo de 3 etapas: Borrador → Análisis → Final
+
+CAMBIOS v4.9.1:
+- FIX: Enlaces de canibalización ahora son hipervínculos completos clickeables
+- Compatibilidad con new_content.py v4.9.2
 
 CAMBIOS v4.9.0:
 - Nuevo parámetro pdp_json_data en build_new_content_prompt_stage1()
@@ -43,7 +47,7 @@ logger = logging.getLogger(__name__)
 # VERSIÓN
 # ============================================================================
 
-__version__ = "4.9.0"
+__version__ = "4.9.1"
 APP_TITLE = "PcComponentes Content Generator"
 
 # ============================================================================
@@ -609,37 +613,48 @@ def render_verify_results(keyword: str, matches: List[Dict], summary: Dict) -> N
         summary: Resumen del análisis
     """
     
-    st.markdown("### 📊 Resultados de la Verificación")
+    st.markdown("### Resultados de la Verificación")
     
     if not matches:
         st.success(f"""
-        ✅ **No se encontró contenido existente para "{keyword}"**
+        **No se encontró contenido existente para "{keyword}"**
         
         Puedes crear contenido nuevo para esta keyword sin riesgo de canibalización.
         
-        💡 **Recomendación:** Procede con la generación usando el modo "Nuevo Contenido" 
+        **Recomendación:** Procede con la generación usando el modo "Nuevo Contenido" 
         o "Reescritura Competitiva".
         """)
         return
     
     # Hay matches - mostrar alerta según gravedad
-    num_urls = len(set(m.get('url', '') for m in matches))
+    unique_urls = list(set(m.get('url', '') for m in matches if m.get('url')))
+    num_urls = len(unique_urls)
     
     if num_urls == 1:
+        url = unique_urls[0]
         st.warning(f"""
-        ⚠️ **Ya tienes contenido rankeando para "{keyword}"**
+        **Ya tienes contenido rankeando para "{keyword}"**
         
-        Se encontró **1 URL** que ya posiciona para esta keyword o variaciones similares.
+        Se encontró **1 URL** que ya posiciona para esta keyword:
         
-        💡 **Recomendación:** Considera mejorar el contenido existente en lugar de crear uno nuevo.
+        [{url}]({url})
+        
+        **Recomendación:** Considera mejorar el contenido existente en lugar de crear uno nuevo.
         """)
     else:
+        # Crear lista de enlaces clickeables
+        urls_list = "\n".join([f"- [{url}]({url})" for url in unique_urls[:5]])
+        if num_urls > 5:
+            urls_list += f"\n- ... y {num_urls - 5} más"
+        
         st.error(f"""
-        🔴 **Posible canibalización detectada para "{keyword}"**
+        **Posible canibalización detectada para "{keyword}"**
         
-        Se encontraron **{num_urls} URLs** compitiendo por esta keyword.
+        Se encontraron **{num_urls} URLs** compitiendo por esta keyword:
         
-        💡 **Recomendación:** Consolida el contenido en una sola URL o diferencia 
+{urls_list}
+        
+        **Recomendación:** Consolida el contenido en una sola URL o diferencia 
         claramente la intención de cada página.
         """)
     
