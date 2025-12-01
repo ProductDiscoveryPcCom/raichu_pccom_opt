@@ -9,6 +9,10 @@ fecha GSC, análisis de canibalización, campo HTML para reescritura,
 integración con n8n para obtener datos de producto, CARGA DE JSON DE PRODUCTOS.
 
 CAMBIOS v4.5.2:
+- Añadida descripción del arquetipo bajo el selector
+- Añadido soporte JSON en producto alternativo (igual que en PDPs)
+
+CAMBIOS v4.5.1:
 - Añadido soporte para carga de JSON de productos (workflow n8n)
 - Widget JSON en producto principal
 - Widget JSON en cada enlace PDP
@@ -60,7 +64,7 @@ logger = logging.getLogger(__name__)
 # CONSTANTES
 # ============================================================================
 
-__version__ = "4.5.1"
+__version__ = "4.5.2"
 
 DEFAULT_CONTENT_LENGTH = 1500
 MIN_CONTENT_LENGTH = 500
@@ -226,17 +230,18 @@ class FormData:
     keyword: str
     pdp_url: Optional[str] = None
     pdp_data: Optional[Dict[str, Any]] = None  # Datos del producto obtenidos via n8n
-    pdp_json_data: Optional[Dict[str, Any]] = None  # NUEVO: Datos del JSON del producto principal
+    pdp_json_data: Optional[Dict[str, Any]] = None  # Datos del JSON del producto principal
     target_length: int = DEFAULT_CONTENT_LENGTH
     arquetipo: str = 'ARQ-1'
     mode: str = 'new'
     competitor_urls: Optional[List[str]] = None
     internal_links: Optional[List[LinkWithAnchor]] = None
-    pdp_links: Optional[List[LinkWithAnchor]] = None  # NUEVO: Ahora incluye product_data en cada enlace
+    pdp_links: Optional[List[LinkWithAnchor]] = None  # Incluye product_data en cada enlace
     additional_instructions: Optional[str] = None
     guiding_answers: Optional[Dict[str, str]] = None
     alternative_product_url: Optional[str] = None
     alternative_product_name: Optional[str] = None
+    alternative_product_json_data: Optional[Dict[str, Any]] = None  # NUEVO v4.5.2: JSON del producto alternativo
     visual_elements: Optional[List[str]] = None  # Elementos visuales seleccionados
 
 
@@ -498,7 +503,7 @@ def render_product_url_with_fetch(
                     st.session_state[state_key_n8n] = None
     
     # ========================================================================
-    # NUEVO: Widget para cargar JSON del producto
+    # Widget para cargar JSON del producto
     # ========================================================================
     st.markdown("---")
     st.markdown("##### 📦 Datos Estructurados del Producto (JSON)")
@@ -1120,27 +1125,133 @@ def _render_cannibalization_check(keyword: str) -> None:
         logger.debug(f"Error en check canibalización: {e}")
 
 
-def render_alternative_product_input(key_prefix: str = "alt_product") -> Tuple[str, str]:
-    """Renderiza inputs para producto alternativo."""
+def render_alternative_product_input(
+    key_prefix: str = "alt_product"
+) -> Tuple[str, str, Optional[Dict[str, Any]]]:
+    """
+    Renderiza inputs para producto alternativo CON soporte para JSON.
+    
+    NUEVO v4.5.2: Añadido widget para cargar JSON del producto alternativo.
+    
+    Args:
+        key_prefix: Prefijo para las keys de los widgets
+        
+    Returns:
+        Tuple[url, name, json_data] - URL, nombre y datos JSON del producto alternativo
+    """
     st.markdown("Sugiere un producto alternativo para mencionar en el contenido")
     
+    # Inicializar estado para JSON
+    json_state_key = f"{key_prefix}_json_data"
+    if json_state_key not in st.session_state:
+        st.session_state[json_state_key] = None
+    
+    # URL y nombre en la misma fila
     col1, col2 = st.columns(2)
     
     with col1:
         alt_url = st.text_input(
-            label="URL del producto alternativo",
+            label="🔗 URL del producto alternativo",
             key=f"{key_prefix}_url",
             placeholder="https://www.pccomponentes.com/producto-alternativo"
         )
     
     with col2:
         alt_name = st.text_input(
-            label="Nombre del producto",
+            label="📝 Nombre del producto",
             key=f"{key_prefix}_name",
             placeholder="Ej: ASUS ROG Strix..."
         )
     
-    return alt_url.strip() if alt_url else "", alt_name.strip() if alt_name else ""
+    # ========================================================================
+    # NUEVO: Widget para cargar JSON del producto alternativo
+    # ========================================================================
+    st.markdown("---")
+    st.markdown(f"""
+    💡 **Enriquece el contenido** cargando el JSON del producto alternativo:
+    [🔗 Obtener JSON desde n8n]({N8N_PRODUCT_JSON_WORKFLOW})
+    """)
+    
+    uploaded_json = st.file_uploader(
+        "📦 JSON del producto alternativo (opcional)",
+        type=['json'],
+        key=f"{key_prefix}_json_upload",
+        help="JSON con datos estructurados del producto alternativo"
+    )
+    
+    product_json_data = None
+    
+    if uploaded_json is not None:
+        try:
+            json_content = uploaded_json.read().decode('utf-8')
+            
+            if _product_json_available:
+                is_valid, error_msg = validate_product_json(json_content)
+                
+                if is_valid:
+                    product_data = parse_product_json(json_content)
+                    
+                    if product_data:
+                        product_json_data = {
+                            'product_id': product_data.product_id,
+                            'legacy_id': product_data.legacy_id,
+                            'title': product_data.title,
+                            'description': product_data.description,
+                            'brand_name': product_data.brand_name,
+                            'family_name': product_data.family_name,
+                            'attributes': product_data.attributes,
+                            'images': product_data.images,
+                            'totalComments': product_data.totalComments,
+                            'advantages': product_data.advantages,
+                            'disadvantages': product_data.disadvantages,
+                            'comments': product_data.comments,
+                        }
+                        
+                        st.session_state[json_state_key] = product_json_data
+                        st.success(f"✅ JSON cargado: {product_data.title[:50]}")
+                        
+                        # Preview compacto
+                        with st.expander("👁️ Preview datos JSON", expanded=False):
+                            summary = create_product_summary(product_data)
+                            col_a, col_b = st.columns(2)
+                            with col_a:
+                                st.markdown(f"**Producto:** {summary['title']}")
+                                st.markdown(f"**Marca:** {summary['brand']}")
+                            with col_b:
+                                st.markdown(f"**Reviews:** {summary['total_reviews']}")
+                                st.markdown(f"**Imágenes:** {summary['image_count']}")
+                    else:
+                        st.error("❌ Error al parsear JSON")
+                        st.session_state[json_state_key] = None
+                else:
+                    st.error(f"❌ {error_msg}")
+                    st.session_state[json_state_key] = None
+            else:
+                # Fallback sin validación
+                parsed_json = json.loads(json_content)
+                st.session_state[json_state_key] = parsed_json
+                st.success("✅ JSON cargado")
+                product_json_data = parsed_json
+                
+        except json.JSONDecodeError as e:
+            st.error(f"❌ Error JSON: {str(e)}")
+            st.session_state[json_state_key] = None
+        except Exception as e:
+            st.error(f"❌ Error: {str(e)}")
+            st.session_state[json_state_key] = None
+    
+    # Recuperar JSON si ya estaba cargado
+    if json_state_key in st.session_state and not product_json_data:
+        product_json_data = st.session_state[json_state_key]
+        if product_json_data:
+            title = product_json_data.get('title', 'Producto')
+            st.caption(f"📦 JSON cargado: {title[:40]}")
+    
+    return (
+        alt_url.strip() if alt_url else "",
+        alt_name.strip() if alt_name else "",
+        product_json_data
+    )
 
 
 def render_competitor_urls_input(key: str = "competitor_urls") -> Tuple[List[str], Optional[str]]:
@@ -1314,7 +1425,7 @@ def render_main_form(mode: str = "new") -> Optional[FormData]:
         # URL del producto con botón para obtener datos via n8n + WIDGET JSON
         pdp_url, pdp_data, url_error = render_product_url_with_fetch(key="main_pdp", required=False)
         
-        # NUEVO: Recuperar JSON del producto principal
+        # Recuperar JSON del producto principal
         pdp_json_data = get_product_json_data(key="main_pdp")
         
         if url_error:
@@ -1346,9 +1457,9 @@ def render_main_form(mode: str = "new") -> Optional[FormData]:
             allow_json=True  # CON JSON para productos
         )
     
-    # Producto alternativo
+    # Producto alternativo CON JSON
     with st.expander("🔄 Producto Alternativo", expanded=False):
-        alt_url, alt_name = render_alternative_product_input(key_prefix="main_alt")
+        alt_url, alt_name, alt_json_data = render_alternative_product_input(key_prefix="main_alt")
     
     # Competidores (solo rewrite)
     competitor_urls = []
@@ -1373,17 +1484,18 @@ def render_main_form(mode: str = "new") -> Optional[FormData]:
         keyword=keyword,
         pdp_url=pdp_url or None,
         pdp_data=pdp_data,  # Datos del producto obtenidos via n8n
-        pdp_json_data=pdp_json_data,  # NUEVO: Datos del JSON del producto principal
+        pdp_json_data=pdp_json_data,  # Datos del JSON del producto principal
         target_length=target_length,
         arquetipo=arquetipo,
         mode=mode,
         competitor_urls=competitor_urls or None,
         internal_links=internal_links or None,
-        pdp_links=pdp_links or None,  # NUEVO: Ahora incluye product_data en cada enlace
+        pdp_links=pdp_links or None,  # Incluye product_data en cada enlace
         additional_instructions=additional_instructions or None,
         guiding_answers=guiding_answers or None,
         alternative_product_url=alt_url,
         alternative_product_name=alt_name,
+        alternative_product_json_data=alt_json_data,  # NUEVO v4.5.2: JSON del producto alternativo
         visual_elements=visual_elements or None
     )
 
@@ -1452,24 +1564,30 @@ def render_content_inputs() -> Tuple[bool, Dict[str, Any]]:
     # Combinar todos los enlaces en una lista única para el prompt
     all_links = internal_links_fmt + pdp_links_fmt
     
+    # Construir objeto de producto alternativo
+    alternative_product = None
+    if form_data.alternative_product_url or form_data.alternative_product_name or form_data.alternative_product_json_data:
+        alternative_product = {
+            'url': form_data.alternative_product_url or '',
+            'name': form_data.alternative_product_name or '',
+            'json_data': form_data.alternative_product_json_data  # NUEVO v4.5.2
+        }
+    
     config = {
         'keyword': form_data.keyword,
         'pdp_url': form_data.pdp_url,
         'pdp_data': form_data.pdp_data,  # Datos del producto obtenidos via n8n
-        'pdp_json_data': form_data.pdp_json_data,  # NUEVO: JSON del producto principal
+        'pdp_json_data': form_data.pdp_json_data,  # JSON del producto principal
         'target_length': form_data.target_length,
         'arquetipo_codigo': form_data.arquetipo,
         'mode': form_data.mode,
         'competitor_urls': form_data.competitor_urls or [],
         'internal_links': internal_links_fmt,
-        'pdp_links': pdp_links_fmt,  # NUEVO: Ahora incluye product_data
+        'pdp_links': pdp_links_fmt,  # Incluye product_data
         'links': all_links,  # Lista combinada para el prompt
         'additional_instructions': form_data.additional_instructions or '',
         'guiding_context': context_from_questions,
-        'alternative_product': {
-            'url': form_data.alternative_product_url or '',
-            'name': form_data.alternative_product_name or ''
-        } if form_data.alternative_product_url else None,
+        'alternative_product': alternative_product,  # Ahora incluye json_data
         'visual_elements': form_data.visual_elements or [],  # Elementos visuales seleccionados
     }
     
@@ -1517,7 +1635,7 @@ __all__ = [
     'render_gsc_date_warning', 'render_alternative_product_input',
     'render_competitor_urls_input', 'render_additional_instructions',
     'render_validation_errors', 'render_product_url_with_fetch',
-    'get_product_json_data',  # NUEVO: Función auxiliar para recuperar JSON
+    'get_product_json_data',
     # Formulario principal
     'render_main_form', 'render_content_inputs',
     # Utilidades
