@@ -6,7 +6,13 @@ Versión 4.5.1
 Componentes de entrada para la interfaz Streamlit.
 Incluye: validación, anchor text, preguntas guía, producto alternativo,
 fecha GSC, análisis de canibalización, campo HTML para reescritura,
-integración con n8n para obtener datos de producto.
+integración con n8n para obtener datos de producto, CARGA DE JSON DE PRODUCTOS.
+
+CAMBIOS v4.5.1:
+- Añadido soporte para carga de JSON de productos (workflow n8n)
+- Widget JSON en producto principal
+- Widget JSON en cada enlace PDP
+- Mantiene compatibilidad con versiones anteriores
 
 Autor: PcComponentes - Product Discovery & Content
 """
@@ -18,6 +24,7 @@ from dataclasses import dataclass, field
 from enum import Enum
 from urllib.parse import urlparse
 from datetime import datetime
+import json
 
 import streamlit as st
 
@@ -33,13 +40,27 @@ except ImportError:
         _n8n_available = False
         fetch_product_for_streamlit = None
 
+# Importar utilidades de JSON de productos
+try:
+    from utils.product_json_utils import (
+        parse_product_json,
+        validate_product_json,
+        format_product_for_prompt,
+        create_product_summary,
+        N8N_PRODUCT_JSON_WORKFLOW
+    )
+    _product_json_available = True
+except ImportError:
+    _product_json_available = False
+    N8N_PRODUCT_JSON_WORKFLOW = "https://n8n.prod.pccomponentes.com/workflow/jsjhKAdZFBSM5XFV/d6c3eb"
+
 logger = logging.getLogger(__name__)
 
 # ============================================================================
 # CONSTANTES
 # ============================================================================
 
-__version__ = "4.5.0"
+__version__ = "4.5.1"
 
 DEFAULT_CONTENT_LENGTH = 1500
 MIN_CONTENT_LENGTH = 500
@@ -99,7 +120,7 @@ except ImportError:
 _ARQUETIPOS_FALLBACK = {f"ARQ-{i}": {"code": f"ARQ-{i}", "name": f"Arquetipo {i}", "guiding_questions": []} for i in range(1, 35)}
 
 try:
-    from config.archetipos import (
+    from config.arquetipos import (
         ARQUETIPOS,
         get_arquetipo,
         get_arquetipo_names,
@@ -184,10 +205,11 @@ class LinkType(Enum):
 
 @dataclass
 class LinkWithAnchor:
-    """Enlace con anchor text personalizado."""
+    """Enlace con anchor text personalizado y datos de producto opcionales."""
     url: str
     anchor: str = ""
     link_type: str = "internal"
+    product_data: Optional[Dict[str, Any]] = None  # NUEVO: Datos del JSON del producto
 
 
 @dataclass
@@ -204,12 +226,13 @@ class FormData:
     keyword: str
     pdp_url: Optional[str] = None
     pdp_data: Optional[Dict[str, Any]] = None  # Datos del producto obtenidos via n8n
+    pdp_json_data: Optional[Dict[str, Any]] = None  # NUEVO: Datos del JSON del producto principal
     target_length: int = DEFAULT_CONTENT_LENGTH
     arquetipo: str = 'ARQ-1'
     mode: str = 'new'
     competitor_urls: Optional[List[str]] = None
     internal_links: Optional[List[LinkWithAnchor]] = None
-    pdp_links: Optional[List[LinkWithAnchor]] = None
+    pdp_links: Optional[List[LinkWithAnchor]] = None  # NUEVO: Ahora incluye product_data en cada enlace
     additional_instructions: Optional[str] = None
     guiding_answers: Optional[Dict[str, str]] = None
     alternative_product_url: Optional[str] = None
@@ -388,20 +411,30 @@ def render_product_url_with_fetch(
     required: bool = False
 ) -> Tuple[str, Optional[Dict[str, Any]], Optional[str]]:
     """
-    Renderiza input de URL de producto con botón para obtener datos via n8n.
-    Permite introducir el ID manualmente si la extracción automática falla.
+    Renderiza input de URL de producto con:
+    - Botón para obtener datos via n8n
+    - Widget para cargar JSON de producto desde n8n workflow
+    - Permite introducir el ID manualmente si la extracción automática falla
+    
+    NOTA: Esta función mantiene compatibilidad retornando 3 valores.
+    El JSON del producto se guarda en session_state y se puede recuperar
+    usando la función auxiliar get_product_json_data().
     
     Args:
         key: Clave única para el widget
         required: Si la URL es obligatoria
         
     Returns:
-        Tuple[url, product_data, error]
+        Tuple[url, product_data, error] - Mantiene compatibilidad con versión anterior
     """
     # Inicializar estado
-    state_key = f"pdp_data_{key}"
-    if state_key not in st.session_state:
-        st.session_state[state_key] = None
+    state_key_n8n = f"pdp_data_{key}"
+    state_key_json = f"pdp_json_{key}"
+    
+    if state_key_n8n not in st.session_state:
+        st.session_state[state_key_n8n] = None
+    if state_key_json not in st.session_state:
+        st.session_state[state_key_json] = None
     
     # URL del producto
     saved_value = get_form_value('pdp_url', '')
@@ -413,7 +446,7 @@ def render_product_url_with_fetch(
         help="Pega la URL de un producto de PcComponentes"
     )
     
-    # ID manual (opcional) y botón en la misma fila
+    # Fila con ID manual y botón fetch
     col1, col2 = st.columns([2, 1])
     
     with col1:
@@ -455,16 +488,109 @@ def render_product_url_with_fetch(
                     )
                     
                     if success:
-                        st.session_state[state_key] = product_data
+                        st.session_state[state_key_n8n] = product_data
                         st.success(f"✅ Datos obtenidos: {product_data.get('name', 'Producto')}")
                     else:
                         st.error(f"❌ {error}")
-                        st.session_state[state_key] = None
+                        st.session_state[state_key_n8n] = None
                 except Exception as e:
                     st.error(f"❌ Error: {str(e)}")
-                    st.session_state[state_key] = None
+                    st.session_state[state_key_n8n] = None
     
+    # ========================================================================
+    # NUEVO: Widget para cargar JSON del producto
+    # ========================================================================
+    st.markdown("---")
+    st.markdown("##### 📦 Datos Estructurados del Producto (JSON)")
+    
+    # Botón con enlace a workflow n8n
+    st.markdown(f"""
+    💡 **Obtén el JSON completo del producto** usando nuestro workflow de n8n:
+    
+    [🔗 Abrir Workflow de n8n]({N8N_PRODUCT_JSON_WORKFLOW})
+    
+    Una vez obtengas el JSON, súbelo aquí para enriquecer el contenido con datos estructurados.
+    """)
+    
+    uploaded_json = st.file_uploader(
+        "Subir JSON del producto (desde workflow n8n)",
+        type=['json'],
+        key=f"{key}_json_upload",
+        help="JSON generado por el workflow de n8n con información completa del producto"
+    )
+    
+    if uploaded_json is not None:
+        try:
+            # Leer y parsear JSON
+            json_content = uploaded_json.read().decode('utf-8')
+            
+            # Validar estructura
+            if _product_json_available:
+                is_valid, error_msg = validate_product_json(json_content)
+                
+                if is_valid:
+                    # Parsear el JSON
+                    product_data = parse_product_json(json_content)
+                    
+                    if product_data:
+                        # Guardar en session state
+                        st.session_state[state_key_json] = {
+                            'product_id': product_data.product_id,
+                            'legacy_id': product_data.legacy_id,
+                            'title': product_data.title,
+                            'description': product_data.description,
+                            'brand_name': product_data.brand_name,
+                            'family_name': product_data.family_name,
+                            'attributes': product_data.attributes,
+                            'images': product_data.images,
+                            'totalComments': product_data.totalComments,
+                            'advantages': product_data.advantages,
+                            'disadvantages': product_data.disadvantages,
+                            'comments': product_data.comments,
+                        }
+                        
+                        st.success(f"✅ JSON cargado correctamente: {product_data.title}")
+                        
+                        # Mostrar preview
+                        with st.expander("👁️ Preview de datos JSON", expanded=False):
+                            summary = create_product_summary(product_data)
+                            
+                            col_a, col_b = st.columns(2)
+                            with col_a:
+                                st.markdown(f"**Producto:** {summary['title']}")
+                                st.markdown(f"**Marca:** {summary['brand']}")
+                                st.markdown(f"**Familia:** {summary['family']}")
+                            with col_b:
+                                st.markdown(f"**ID:** {summary['id']}")
+                                st.markdown(f"**Reviews:** {summary['total_reviews']}")
+                                st.markdown(f"**Imágenes:** {summary['image_count']}")
+                            
+                            if summary.get('key_attributes'):
+                                st.markdown("**Atributos clave:**")
+                                for attr, value in summary['key_attributes'].items():
+                                    st.caption(f"• {attr}: {value}")
+                    else:
+                        st.error("❌ Error al parsear el JSON del producto")
+                        st.session_state[state_key_json] = None
+                else:
+                    st.error(f"❌ JSON inválido: {error_msg}")
+                    st.session_state[state_key_json] = None
+            else:
+                # Fallback sin validación
+                parsed_json = json.loads(json_content)
+                st.session_state[state_key_json] = parsed_json
+                st.success("✅ JSON cargado (sin validación)")
+                
+        except json.JSONDecodeError as e:
+            st.error(f"❌ Error al leer JSON: {str(e)}")
+            st.session_state[state_key_json] = None
+        except Exception as e:
+            st.error(f"❌ Error inesperado: {str(e)}")
+            st.session_state[state_key_json] = None
+    
+    # ========================================================================
     # Validar URL
+    # ========================================================================
     error = None
     if url:
         result = validate_url(url, require_pccomponentes=True)
@@ -477,27 +603,46 @@ def render_product_url_with_fetch(
     elif required:
         error = "La URL es obligatoria"
     
-    # Mostrar datos obtenidos
-    product_data = st.session_state.get(state_key)
-    if product_data:
-        with st.expander("📦 Datos del producto", expanded=True):
+    # Mostrar datos obtenidos via n8n (si existen)
+    product_data_n8n = st.session_state.get(state_key_n8n)
+    if product_data_n8n:
+        with st.expander("📦 Datos del producto (vía n8n)", expanded=False):
             col_a, col_b = st.columns(2)
             with col_a:
-                st.markdown(f"**Nombre:** {product_data.get('name', 'N/A')}")
-                st.markdown(f"**Marca:** {product_data.get('brand', 'N/A')}")
+                st.markdown(f"**Nombre:** {product_data_n8n.get('name', 'N/A')}")
+                st.markdown(f"**Marca:** {product_data_n8n.get('brand', 'N/A')}")
             with col_b:
-                price = product_data.get('price_formatted') or product_data.get('price', 'N/A')
+                price = product_data_n8n.get('price_formatted') or product_data_n8n.get('price', 'N/A')
                 st.markdown(f"**Precio:** {price}")
-                st.markdown(f"**ID:** {product_data.get('legacy_id', 'N/A')}")
+                st.markdown(f"**ID:** {product_data_n8n.get('legacy_id', 'N/A')}")
             
             # Atributos
-            attrs = product_data.get('attributes', {})
+            attrs = product_data_n8n.get('attributes', {})
             if attrs:
                 st.markdown("**Características:**")
                 for attr_name, attr_value in list(attrs.items())[:5]:
                     st.markdown(f"- {attr_name}: {attr_value}")
     
-    return url or "", product_data, error
+    # Retornar SOLO 3 valores para mantener compatibilidad
+    # El JSON se puede recuperar con get_product_json_data(key)
+    return url or "", product_data_n8n, error
+
+
+def get_product_json_data(key: str = "product_url") -> Optional[Dict[str, Any]]:
+    """
+    Recupera los datos del JSON de producto cargado.
+    
+    Esta función auxiliar permite acceder al JSON sin romper la compatibilidad
+    de la función render_product_url_with_fetch().
+    
+    Args:
+        key: Misma key usada en render_product_url_with_fetch()
+        
+    Returns:
+        Dict con datos del JSON o None si no hay
+    """
+    state_key_json = f"pdp_json_{key}"
+    return st.session_state.get(state_key_json)
 
 
 def render_length_slider(
@@ -611,9 +756,24 @@ def render_links_with_anchors(
     key_prefix: str = "links",
     label: str = "Enlaces",
     link_type: str = "internal",
-    max_links: int = 10
+    max_links: int = 10,
+    allow_json: bool = False
 ) -> List[LinkWithAnchor]:
-    """Renderiza UI dinámica para enlaces con anchor text editable."""
+    """
+    Renderiza UI dinámica para enlaces con anchor text editable.
+    
+    NUEVO: Si allow_json=True, permite cargar JSON de producto para cada enlace.
+    
+    Args:
+        key_prefix: Prefijo para las keys de los widgets
+        label: Etiqueta del bloque
+        link_type: Tipo de enlace (internal/pdp/external)
+        max_links: Número máximo de enlaces
+        allow_json: Si True, permite cargar JSON para cada enlace
+        
+    Returns:
+        Lista de LinkWithAnchor (ahora incluye product_data si hay JSON)
+    """
     count_key = f"{key_prefix}_count"
     delete_key = f"{key_prefix}_delete_idx"
     
@@ -633,8 +793,12 @@ def render_links_with_anchors(
             for j in range(idx_to_delete, current_count - 1):
                 next_url = st.session_state.get(f"{key_prefix}_url_{j+1}", "")
                 next_anchor = st.session_state.get(f"{key_prefix}_anchor_{j+1}", "")
+                next_json = st.session_state.get(f"{key_prefix}_json_{j+1}")
+                
                 st.session_state[f"{key_prefix}_url_{j}"] = next_url
                 st.session_state[f"{key_prefix}_anchor_{j}"] = next_anchor
+                if next_json:
+                    st.session_state[f"{key_prefix}_json_{j}"] = next_json
             
             # Limpiar última fila
             last_idx = current_count - 1
@@ -642,6 +806,8 @@ def render_links_with_anchors(
                 del st.session_state[f"{key_prefix}_url_{last_idx}"]
             if f"{key_prefix}_anchor_{last_idx}" in st.session_state:
                 del st.session_state[f"{key_prefix}_anchor_{last_idx}"]
+            if f"{key_prefix}_json_{last_idx}" in st.session_state:
+                del st.session_state[f"{key_prefix}_json_{last_idx}"]
             
             # Decrementar contador
             st.session_state[count_key] = max(1, current_count - 1)
@@ -654,47 +820,191 @@ def render_links_with_anchors(
     
     st.markdown(f"**{label}** (máx. {max_links})")
     
+    # Si permite JSON, mostrar info
+    if allow_json:
+        st.caption(f"💡 Puedes cargar el JSON de cada producto usando [este workflow]({N8N_PRODUCT_JSON_WORKFLOW})")
+    
+    # Renderizar cada enlace
     for i in range(current_count):
-        col1, col2, col3 = st.columns([5, 4, 1])
-        
-        with col1:
-            url = st.text_input(
-                label=f"URL {i+1}",
-                key=f"{key_prefix}_url_{i}",
-                placeholder="https://www.pccomponentes.com/...",
-                label_visibility="collapsed"
-            )
-        
-        with col2:
-            anchor = st.text_input(
-                label=f"Anchor {i+1}",
-                key=f"{key_prefix}_anchor_{i}",
-                placeholder="Texto del enlace (anchor)",
-                label_visibility="collapsed"
-            )
-        
-        with col3:
-            if current_count > 1:
-                if st.button("🗑️", key=f"{key_prefix}_del_{i}", help="Eliminar"):
-                    st.session_state[delete_key] = i
-                    st.rerun()
-        
-        if url and url.strip():
-            validated = validate_url(url.strip())
-            if validated.is_valid:
-                links.append(LinkWithAnchor(
-                    url=validated.value,
-                    anchor=anchor.strip() if anchor else "",
-                    link_type=link_type
-                ))
+        # Si permite JSON, usar expander para mejor organización
+        if allow_json:
+            with st.expander(f"🔗 Enlace {i+1}", expanded=(i == 0)):
+                link_data = _render_single_pdp_link(key_prefix, i, link_type, current_count)
+                if link_data:
+                    links.append(link_data)
+        else:
+            # Versión simple inline (sin JSON)
+            link_data = _render_single_simple_link(key_prefix, i, link_type, current_count)
+            if link_data:
+                links.append(link_data)
     
     # Botón añadir
     if current_count < max_links:
-        if st.button(f"➕ Añadir enlace", key=f"{key_prefix}_add"):
+        if st.button(f"➕ Añadir {label.lower()}", key=f"{key_prefix}_add"):
             st.session_state[count_key] = current_count + 1
             st.rerun()
     
     return links
+
+
+def _render_single_simple_link(
+    key_prefix: str, 
+    i: int, 
+    link_type: str, 
+    current_count: int
+) -> Optional[LinkWithAnchor]:
+    """
+    Renderiza un enlace simple (sin JSON) inline.
+    
+    Returns:
+        LinkWithAnchor o None si no hay URL válida
+    """
+    col1, col2, col3 = st.columns([5, 4, 1])
+    
+    with col1:
+        url = st.text_input(
+            label=f"URL {i+1}",
+            key=f"{key_prefix}_url_{i}",
+            placeholder="https://www.pccomponentes.com/...",
+            label_visibility="collapsed"
+        )
+    
+    with col2:
+        anchor = st.text_input(
+            label=f"Anchor {i+1}",
+            key=f"{key_prefix}_anchor_{i}",
+            placeholder="Texto del enlace (anchor)",
+            label_visibility="collapsed"
+        )
+    
+    with col3:
+        if current_count > 1:
+            if st.button("🗑️", key=f"{key_prefix}_del_{i}", help="Eliminar"):
+                st.session_state[f"{key_prefix}_delete_idx"] = i
+                st.rerun()
+    
+    if url and url.strip():
+        validated = validate_url(url.strip())
+        if validated.is_valid:
+            return LinkWithAnchor(
+                url=validated.value,
+                anchor=anchor.strip() if anchor else "",
+                link_type=link_type,
+                product_data=None
+            )
+    
+    return None
+
+
+def _render_single_pdp_link(
+    key_prefix: str, 
+    i: int, 
+    link_type: str, 
+    current_count: int
+) -> Optional[LinkWithAnchor]:
+    """
+    Renderiza un enlace de producto CON opción de cargar JSON.
+    
+    Returns:
+        LinkWithAnchor o None si no hay URL válida
+    """
+    # URL y anchor
+    col1, col2 = st.columns([3, 2])
+    
+    with col1:
+        url = st.text_input(
+            label=f"URL del producto {i+1}",
+            key=f"{key_prefix}_url_{i}",
+            placeholder="https://www.pccomponentes.com/producto",
+            help="URL del producto"
+        )
+    
+    with col2:
+        anchor = st.text_input(
+            label=f"Anchor text {i+1}",
+            key=f"{key_prefix}_anchor_{i}",
+            placeholder="Texto del enlace",
+            help="Texto visible del enlace"
+        )
+    
+    # Widget de JSON
+    json_key = f"{key_prefix}_json_{i}"
+    uploaded_json = st.file_uploader(
+        f"📦 JSON del producto {i+1} (opcional)",
+        type=['json'],
+        key=f"{key_prefix}_json_upload_{i}",
+        help="JSON con datos estructurados del producto"
+    )
+    
+    product_json_data = None
+    
+    if uploaded_json is not None:
+        try:
+            json_content = uploaded_json.read().decode('utf-8')
+            
+            if _product_json_available:
+                is_valid, error_msg = validate_product_json(json_content)
+                
+                if is_valid:
+                    product_data = parse_product_json(json_content)
+                    
+                    if product_data:
+                        product_json_data = {
+                            'product_id': product_data.product_id,
+                            'legacy_id': product_data.legacy_id,
+                            'title': product_data.title,
+                            'description': product_data.description,
+                            'brand_name': product_data.brand_name,
+                            'family_name': product_data.family_name,
+                            'attributes': product_data.attributes,
+                            'images': product_data.images,
+                            'totalComments': product_data.totalComments,
+                            'advantages': product_data.advantages,
+                            'disadvantages': product_data.disadvantages,
+                            'comments': product_data.comments,
+                        }
+                        
+                        st.session_state[json_key] = product_json_data
+                        st.success(f"✅ JSON: {product_data.title[:50]}")
+                    else:
+                        st.error("❌ Error al parsear JSON")
+                else:
+                    st.error(f"❌ {error_msg}")
+            else:
+                # Fallback
+                parsed_json = json.loads(json_content)
+                st.session_state[json_key] = parsed_json
+                st.success("✅ JSON cargado")
+                product_json_data = parsed_json
+                
+        except Exception as e:
+            st.error(f"❌ Error: {str(e)}")
+    
+    # Recuperar JSON si ya estaba cargado
+    if json_key in st.session_state and not product_json_data:
+        product_json_data = st.session_state[json_key]
+        if product_json_data:
+            title = product_json_data.get('title', 'Producto')
+            st.caption(f"📦 JSON cargado: {title[:40]}")
+    
+    # Botón eliminar
+    if current_count > 1:
+        if st.button("🗑️ Eliminar enlace", key=f"{key_prefix}_del_{i}"):
+            st.session_state[f"{key_prefix}_delete_idx"] = i
+            st.rerun()
+    
+    # Retornar LinkWithAnchor si hay URL válida
+    if url and url.strip():
+        validated = validate_url(url.strip())
+        if validated.is_valid:
+            return LinkWithAnchor(
+                url=validated.value,
+                anchor=anchor.strip() if anchor else "",
+                link_type=link_type,
+                product_data=product_json_data
+            )
+    
+    return None
 
 
 def render_guiding_questions(arquetipo_code: str, key_prefix: str = "guiding") -> Dict[str, str]:
@@ -992,8 +1302,12 @@ def render_main_form(mode: str = "new") -> Optional[FormData]:
         arquetipo = render_arquetipo_selector(key="main_arquetipo")
     
     with col2:
-        # URL del producto con botón para obtener datos via n8n
+        # URL del producto con botón para obtener datos via n8n + WIDGET JSON
         pdp_url, pdp_data, url_error = render_product_url_with_fetch(key="main_pdp", required=False)
+        
+        # NUEVO: Recuperar JSON del producto principal
+        pdp_json_data = get_product_json_data(key="main_pdp")
+        
         if url_error:
             errors.append(url_error)
         
@@ -1008,16 +1322,19 @@ def render_main_form(mode: str = "new") -> Optional[FormData]:
             key_prefix="main_internal",
             label="Enlaces Internos",
             link_type="internal",
-            max_links=10
+            max_links=10,
+            allow_json=False  # Sin JSON para enlaces internos
         )
     
-    # Enlaces PDP con anchor
+    # Enlaces PDP con anchor y JSON
     with st.expander("🛒 Enlaces a PDPs", expanded=False):
+        st.info("💡 **NUEVO**: Ahora puedes cargar el JSON de cada producto para enriquecer el contenido.")
         pdp_links = render_links_with_anchors(
-            key_prefix="main_pdp",
+            key_prefix="main_pdp_links",
             label="Enlaces a Productos",
             link_type="pdp",
-            max_links=5
+            max_links=5,
+            allow_json=True  # CON JSON para productos
         )
     
     # Producto alternativo
@@ -1047,12 +1364,13 @@ def render_main_form(mode: str = "new") -> Optional[FormData]:
         keyword=keyword,
         pdp_url=pdp_url or None,
         pdp_data=pdp_data,  # Datos del producto obtenidos via n8n
+        pdp_json_data=pdp_json_data,  # NUEVO: Datos del JSON del producto principal
         target_length=target_length,
         arquetipo=arquetipo,
         mode=mode,
         competitor_urls=competitor_urls or None,
         internal_links=internal_links or None,
-        pdp_links=pdp_links or None,
+        pdp_links=pdp_links or None,  # NUEVO: Ahora incluye product_data en cada enlace
         additional_instructions=additional_instructions or None,
         guiding_answers=guiding_answers or None,
         alternative_product_url=alt_url,
@@ -1099,15 +1417,21 @@ def render_content_inputs() -> Tuple[bool, Dict[str, Any]]:
                 'type': 'internal'
             })
     
-    # Formatear enlaces PDP
+    # Formatear enlaces PDP (ahora incluyen product_data)
     pdp_links_fmt = []
     if form_data.pdp_links:
         for link in form_data.pdp_links:
-            pdp_links_fmt.append({
+            link_dict = {
                 'url': link.url,
                 'anchor': link.anchor,
                 'type': 'pdp'
-            })
+            }
+            
+            # Añadir datos de producto si existen
+            if link.product_data:
+                link_dict['product_data'] = link.product_data
+            
+            pdp_links_fmt.append(link_dict)
     
     # Formatear contexto de preguntas guía
     context_from_questions = ""
@@ -1123,12 +1447,13 @@ def render_content_inputs() -> Tuple[bool, Dict[str, Any]]:
         'keyword': form_data.keyword,
         'pdp_url': form_data.pdp_url,
         'pdp_data': form_data.pdp_data,  # Datos del producto obtenidos via n8n
+        'pdp_json_data': form_data.pdp_json_data,  # NUEVO: JSON del producto principal
         'target_length': form_data.target_length,
         'arquetipo_codigo': form_data.arquetipo,
         'mode': form_data.mode,
         'competitor_urls': form_data.competitor_urls or [],
         'internal_links': internal_links_fmt,
-        'pdp_links': pdp_links_fmt,
+        'pdp_links': pdp_links_fmt,  # NUEVO: Ahora incluye product_data
         'links': all_links,  # Lista combinada para el prompt
         'additional_instructions': form_data.additional_instructions or '',
         'guiding_context': context_from_questions,
@@ -1182,7 +1507,8 @@ __all__ = [
     'render_links_with_anchors', 'render_guiding_questions',
     'render_gsc_date_warning', 'render_alternative_product_input',
     'render_competitor_urls_input', 'render_additional_instructions',
-    'render_validation_errors',
+    'render_validation_errors', 'render_product_url_with_fetch',
+    'get_product_json_data',  # NUEVO: Función auxiliar para recuperar JSON
     # Formulario principal
     'render_main_form', 'render_content_inputs',
     # Utilidades
