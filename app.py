@@ -124,7 +124,7 @@ DEBUG_MODE = _config['debug_mode']
 
 # Arquetipos
 try:
-    from config.archetipos import get_arquetipo, ARQUETIPOS
+    from config.arquetipos import get_arquetipo, get_arquetipo_names, ARQUETIPOS
 except ImportError:
     logger.warning("No se pudo importar arquetipos")
     ARQUETIPOS = {}
