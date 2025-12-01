@@ -1,9 +1,15 @@
 # -*- coding: utf-8 -*-
 """
 New Content Prompts - PcComponentes Content Generator
-Versión 4.9.1
+Versión 4.9.2
 
 Prompts para generación de contenido nuevo en 3 etapas.
+
+CAMBIOS v4.9.2:
+- FIX: Callout-bf con padding reducido, sin espacio extra abajo
+- FIX: Responsive en callouts para móvil
+- FIX: Solo emojis permitidos en contenido: ⚡ 💡 ✅
+- FIX: Templates sin emojis no soportados por CMS
 
 CAMBIOS v4.9.1:
 - FIX: Tablas con table-layout:fixed para alinear columnas correctamente
@@ -44,7 +50,7 @@ Autor: PcComponentes - Product Discovery & Content
 
 from typing import Dict, List, Optional, Any
 
-__version__ = "4.9.1"
+__version__ = "4.9.2"
 
 # Importar constantes de tono desde config.brand (existente)
 try:
@@ -61,11 +67,12 @@ except ImportError:
 
 
 # ============================================================================
-# CSS MINIFICADO v4.9.1
+# CSS MINIFICADO v4.9.2
 # Correcciones:
 # - Tablas: table-layout:fixed para alinear columnas correctamente
 # - Espaciado: más margen entre headings y cajas, padding interno aumentado
 # - Enlaces: color claro en fondos oscuros (verdict-box, callout-bf)
+# - Callouts: padding ajustado, p:last-child sin margin, responsive
 # ============================================================================
 
 CSS_INLINE_MINIFIED = """:root{--orange-900:#FF6000;--blue-m-900:#170453;--white:#FFFFFF;--gray-100:#F5F5F5;--gray-200:#E5E5E5;--gray-700:#404040;--gray-900:#171717;--space-md:16px;--space-lg:24px;--space-xl:32px;--radius-md:8px;}
@@ -81,10 +88,16 @@ CSS_INLINE_MINIFIED = """:root{--orange-900:#FF6000;--blue-m-900:#170453;--white
 .verdict-box{background:linear-gradient(135deg,var(--blue-m-900),#2E1A7A);color:var(--white);padding:var(--space-xl);border-radius:var(--radius-md);margin-top:var(--space-lg);}
 .verdict-box a{color:#FFD700;text-decoration:underline;}
 .verdict-box a:hover{color:var(--white);}
+.verdict-box p:last-child{margin-bottom:0;}
 .callout{background:var(--gray-100);border-left:4px solid var(--orange-900);padding:var(--space-md) var(--space-lg);margin:var(--space-lg) 0;border-radius:0 var(--radius-md) var(--radius-md) 0;}
-.callout-bf{background:linear-gradient(135deg,#FF6000,#FF8533);color:var(--white);padding:var(--space-xl);border-radius:var(--radius-md);text-align:center;margin:var(--space-lg) 0;}
+.callout p:last-child{margin-bottom:0;}
+.callout-bf{background:linear-gradient(135deg,#FF6000,#FF8533);color:var(--white);padding:var(--space-lg);border-radius:var(--radius-md);text-align:center;margin:var(--space-lg) 0;}
+.callout-bf p{font-size:1.1em;line-height:1.5;margin:0 auto;max-width:90%;}
+.callout-bf p:first-of-type{font-weight:700;text-transform:uppercase;letter-spacing:0.5px;margin-bottom:8px;}
+.callout-bf p:last-child{margin-bottom:0;}
 .callout-bf a{color:var(--white);text-decoration:underline;font-weight:600;}
 .callout-bf a:hover{color:#FFD700;}
+@media(max-width:768px){.callout-bf{padding:var(--space-md);}.callout-bf p{font-size:1em;max-width:100%;}}
 table{width:100%;border-collapse:collapse;margin:var(--space-lg) 0;table-layout:fixed;}
 th,td{padding:12px 16px;text-align:left;border-bottom:1px solid var(--gray-200);word-wrap:break-word;}
 th{background:var(--gray-100);font-weight:600;}
@@ -484,10 +497,10 @@ Colócala después del H2 principal.""",
 ```
 Usa callouts para tips, advertencias o información clave.""",
 
-        'callout_bf': """**🔥 Callout Black Friday:**
+        'callout_bf': """**Callout Black Friday:**
 ```html
 <div class="callout-bf">
-    <p>🔥 <strong>OFERTA BLACK FRIDAY</strong> 🔥</p>
+    <p><strong>OFERTA BLACK FRIDAY</strong></p>
     <p>Descripción de la oferta especial.</p>
 </div>
 ```
@@ -731,17 +744,18 @@ El HTML debe empezar DIRECTAMENTE con <style>:
 
 ---
 
-## ⚠️ REGLAS CRÍTICAS
+## REGLAS CRÍTICAS
 
-1. ❌ **NO** uses ```html ni marcadores markdown
-2. ✅ Empieza DIRECTAMENTE con `<style>`
-3. ✅ FAQs DEBEN incluir keyword: "Preguntas frecuentes sobre {keyword}"
-4. ✅ Si tienes datos de usuarios, ÚSALOS (ventajas/desventajas)
-5. ✅ Si tienes datos de productos enlazados, MENCIÓNALOS con sus características
-6. ✅ SÉ HONESTO: si hay "peros", menciónalos
-7. ✅ **EVITA frases de IA:** "en el mundo actual", "sin lugar a dudas", etc.
-8. ✅ El veredicto debe APORTAR, no solo resumir
-9. ✅ Incluye TODOS los enlaces proporcionados con su anchor text exacto
+1. **NO** uses ```html ni marcadores markdown
+2. Empieza DIRECTAMENTE con `<style>`
+3. FAQs DEBEN incluir keyword: "Preguntas frecuentes sobre {keyword}"
+4. Si tienes datos de usuarios, ÚSALOS (ventajas/desventajas)
+5. Si tienes datos de productos enlazados, MENCIÓNALOS con sus características
+6. SÉ HONESTO: si hay "peros", menciónalos
+7. **EVITA frases de IA:** "en el mundo actual", "sin lugar a dudas", etc.
+8. El veredicto debe APORTAR, no solo resumir
+9. Incluye TODOS los enlaces proporcionados con su anchor text exacto
+10. **EMOJIS:** Solo puedes usar estos 3 emojis en el contenido: ⚡ 💡 ✅ (ningún otro)
 
 **Genera el HTML ahora:**
 """
@@ -1014,17 +1028,18 @@ def build_final_prompt_stage3(
 
 ---
 
-## ⚠️ REGLAS ABSOLUTAS
+## REGLAS ABSOLUTAS
 
-1. ❌ **NUNCA** uses ```html ni markdown
-2. ✅ Empieza DIRECTAMENTE con `<style>`
-3. ✅ Longitud aproximada: ~{target_length} palabras
-4. ✅ FAQs: "Preguntas frecuentes sobre {keyword}"
-5. ✅ Incluye verdict-box
-6. ✅ Aplica TODAS las correcciones del análisis
-7. ✅ Incluye TODOS los enlaces con datos de producto si disponibles
-8. ✅ Menciona el producto alternativo si lo hay
-9. ✅ Tono PcComponentes en cada párrafo
+1. **NUNCA** uses ```html ni markdown
+2. Empieza DIRECTAMENTE con `<style>`
+3. Longitud aproximada: ~{target_length} palabras
+4. FAQs: "Preguntas frecuentes sobre {keyword}"
+5. Incluye verdict-box
+6. Aplica TODAS las correcciones del análisis
+7. Incluye TODOS los enlaces con datos de producto si disponibles
+8. Menciona el producto alternativo si lo hay
+9. Tono PcComponentes en cada párrafo
+10. **EMOJIS:** Solo usa estos 3 emojis: ⚡ 💡 ✅ (ningún otro)
 
 **Genera SOLO el HTML final, sin explicaciones:**
 """
@@ -1059,7 +1074,7 @@ def get_element_template(name: str) -> str:
     """Retorna plantilla de elemento."""
     templates = {
         'callout': '<div class="callout"><p><strong>💡 Dato:</strong> [Contenido]</p></div>',
-        'callout_bf': '<div class="callout-bf"><p>🔥 <strong>OFERTA</strong> 🔥</p><p>[Contenido]</p></div>',
+        'callout_bf': '<div class="callout-bf"><p><strong>OFERTA</strong></p><p>[Contenido]</p></div>',
         'verdict_box': '<div class="verdict-box"><h2>Veredicto Final</h2><p>[Conclusión]</p></div>',
         'table': '<table><thead><tr><th>Característica</th><th>Valor</th></tr></thead><tbody><tr><td>...</td><td>...</td></tr></tbody></table>',
         'grid': '<div class="grid-layout"><div class="grid-item">...</div></div>',
