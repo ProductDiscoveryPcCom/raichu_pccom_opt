@@ -1,9 +1,16 @@
 # -*- coding: utf-8 -*-
 """
 New Content Prompts - PcComponentes Content Generator
-Versión 4.8.0
+Versión 4.9.0
 
 Prompts para generación de contenido nuevo en 3 etapas.
+
+CAMBIOS v4.9.0:
+- Fusión de pdp_data (n8n) + pdp_json_data (JSON subido)
+- Procesamiento de product_data en enlaces PDP
+- Soporte completo para alternative_product.json_data
+- Implementación de visual_elements (TOC, tablas, callouts, etc.)
+- Nuevo parámetro pdp_json_data en build_new_content_prompt_stage1
 
 CARACTERÍSTICAS:
 - Funciona igual de bien CON o SIN datos de producto
@@ -12,7 +19,7 @@ CARACTERÍSTICAS:
 - Tono de marca PcComponentes integrado (desde config/brand.py)
 - Instrucciones anti-IA para evitar patrones artificiales
 
-CAMPOS DE PRODUCTO SOPORTADOS (del Dict pdp_data):
+CAMPOS DE PRODUCTO SOPORTADOS (del Dict pdp_data o pdp_json_data):
 | Campo              | Tipo         | Uso en Prompt                         |
 |--------------------|--------------|---------------------------------------|
 | title              | str          | Nombre del producto                   |
@@ -30,7 +37,7 @@ Autor: PcComponentes - Product Discovery & Content
 
 from typing import Dict, List, Optional, Any
 
-__version__ = "4.8.0"
+__version__ = "4.9.0"
 
 # Importar constantes de tono desde config.brand (existente)
 try:
@@ -61,9 +68,131 @@ CSS_INLINE_MINIFIED = """:root{--orange-900:#FF6000;--blue-m-900:#170453;--white
 .faqs__question{font-weight:600;margin-bottom:8px;}
 .verdict-box{background:linear-gradient(135deg,var(--blue-m-900),#2E1A7A);color:var(--white);padding:var(--space-lg);border-radius:var(--radius-md);}
 .callout{background:var(--gray-100);border-left:4px solid var(--orange-900);padding:var(--space-md);margin:var(--space-lg) 0;border-radius:0 var(--radius-md) var(--radius-md) 0;}
+.callout-bf{background:linear-gradient(135deg,#FF6000,#FF8533);color:var(--white);padding:var(--space-lg);border-radius:var(--radius-md);text-align:center;}
 table{width:100%;border-collapse:collapse;margin:var(--space-lg) 0;}
 th,td{padding:12px;text-align:left;border-bottom:1px solid var(--gray-200);}
-th{background:var(--gray-100);font-weight:600;}"""
+th{background:var(--gray-100);font-weight:600;}
+.grid-layout{display:grid;grid-template-columns:repeat(auto-fit,minmax(280px,1fr));gap:var(--space-lg);}
+.grid-item{background:var(--white);border:1px solid var(--gray-200);border-radius:var(--radius-md);padding:var(--space-md);}
+.card.destacado{border:2px solid var(--orange-900);position:relative;}
+.card.destacado::before{content:'DESTACADO';position:absolute;top:-10px;left:20px;background:var(--orange-900);color:var(--white);padding:2px 8px;font-size:11px;border-radius:4px;}
+.product-module{background:var(--gray-100);padding:var(--space-lg);border-radius:var(--radius-md);margin:var(--space-lg) 0;}
+.price-tag{font-size:1.5em;font-weight:700;color:var(--orange-900);}"""
+
+
+# ============================================================================
+# FUSIÓN DE DATOS DE PRODUCTO
+# ============================================================================
+
+def _merge_product_data(
+    pdp_data: Optional[Dict],
+    pdp_json_data: Optional[Dict]
+) -> Optional[Dict]:
+    """
+    Fusiona datos de producto de múltiples fuentes.
+    
+    Prioridad:
+    1. pdp_json_data (JSON subido por usuario) - más completo
+    2. pdp_data (datos de n8n webhook) - fallback
+    
+    Args:
+        pdp_data: Datos del webhook n8n
+        pdp_json_data: Datos del JSON subido
+        
+    Returns:
+        Dict fusionado con todos los datos disponibles
+    """
+    if not pdp_data and not pdp_json_data:
+        return None
+    
+    # Si solo hay una fuente, usarla
+    if not pdp_data:
+        return pdp_json_data
+    if not pdp_json_data:
+        return pdp_data
+    
+    # Fusionar: pdp_json_data tiene prioridad
+    merged = dict(pdp_data)  # Copiar base
+    
+    # Campos de pdp_json_data que tienen prioridad
+    priority_fields = [
+        'title', 'description', 'brand_name', 'family_name',
+        'attributes', 'images', 'totalComments', 'total_comments',
+        'advantages', 'disadvantages', 'comments',
+        'advantages_list', 'disadvantages_list', 'top_comments',
+        'has_user_feedback'
+    ]
+    
+    for field in priority_fields:
+        if field in pdp_json_data and pdp_json_data[field]:
+            merged[field] = pdp_json_data[field]
+    
+    # Normalizar campos
+    if 'totalComments' in merged and 'total_comments' not in merged:
+        merged['total_comments'] = merged['totalComments']
+    
+    # Procesar ventajas/desventajas si vienen como string
+    if 'advantages' in merged and isinstance(merged['advantages'], str):
+        if 'advantages_list' not in merged:
+            merged['advantages_list'] = _parse_advantages_string(merged['advantages'])
+    
+    if 'disadvantages' in merged and isinstance(merged['disadvantages'], str):
+        if 'disadvantages_list' not in merged:
+            merged['disadvantages_list'] = _parse_advantages_string(merged['disadvantages'])
+    
+    # Procesar comentarios
+    if 'comments' in merged and isinstance(merged['comments'], list):
+        if 'top_comments' not in merged:
+            merged['top_comments'] = _extract_comment_texts(merged['comments'])
+    
+    # Flag de feedback
+    if 'has_user_feedback' not in merged:
+        merged['has_user_feedback'] = bool(
+            merged.get('advantages_list') or 
+            merged.get('disadvantages_list') or 
+            merged.get('top_comments')
+        )
+    
+    return merged
+
+
+def _parse_advantages_string(text: str, max_items: int = 10) -> List[str]:
+    """Parsea string de ventajas/desventajas a lista."""
+    if not text:
+        return []
+    
+    # Normalizar separadores
+    normalized = text.replace('\n\n', '\n')
+    items = [item.strip() for item in normalized.split('\n')]
+    
+    # Filtrar
+    skip_words = ['ninguno', 'nada', 'ninguna', 'n/a', '-', '']
+    filtered = []
+    for item in items:
+        if not item or len(item) < 8:
+            continue
+        if item.lower().strip() in skip_words:
+            continue
+        filtered.append(item)
+    
+    return filtered[:max_items]
+
+
+def _extract_comment_texts(comments: List[Any], max_items: int = 5) -> List[str]:
+    """Extrae textos de comentarios."""
+    if not comments:
+        return []
+    
+    result = []
+    for item in comments:
+        if isinstance(item, dict):
+            text = item.get('opinion') or item.get('text') or item.get('content')
+            if text and isinstance(text, str) and len(text) >= 15:
+                result.append(text.strip())
+        elif isinstance(item, str) and len(item) >= 15:
+            result.append(item.strip())
+    
+    return result[:max_items]
 
 
 # ============================================================================
@@ -75,8 +204,7 @@ def _format_product_section(pdp_data: Optional[Dict]) -> tuple:
     Formatea datos del producto para el prompt.
     
     Args:
-        pdp_data: Dict con datos del producto (resultado de PDPProductData.to_dict())
-                  Puede ser None si no hay datos
+        pdp_data: Dict con datos del producto (ya fusionados)
         
     Returns:
         Tuple[section_text: str, has_feedback: bool]
@@ -88,35 +216,41 @@ def _format_product_section(pdp_data: Optional[Dict]) -> tuple:
     has_feedback = pdp_data.get('has_user_feedback', False)
     
     lines.append("=" * 60)
-    lines.append("DATOS DEL PRODUCTO")
+    lines.append("📦 DATOS DEL PRODUCTO PRINCIPAL")
     lines.append("=" * 60)
     
     # Info básica
-    title = pdp_data.get('title', '')
+    title = pdp_data.get('title') or pdp_data.get('name', '')
     if title:
         lines.append(f"\n**Producto:** {title}")
     
-    brand = pdp_data.get('brand_name', '')
+    brand = pdp_data.get('brand_name') or pdp_data.get('brand', '')
     if brand:
         lines.append(f"**Marca:** {brand}")
     
-    family = pdp_data.get('family_name', '')
+    family = pdp_data.get('family_name') or pdp_data.get('family', '')
     if family:
         lines.append(f"**Categoría:** {family}")
+    
+    # Descripción breve
+    desc = pdp_data.get('description', '')
+    if desc and len(desc) > 50:
+        short_desc = desc[:300] + "..." if len(desc) > 300 else desc
+        lines.append(f"\n**Descripción:** {short_desc}")
     
     # Especificaciones
     attrs = pdp_data.get('attributes', {})
     if attrs:
         lines.append("\n**📋 ESPECIFICACIONES:**")
         for i, (k, v) in enumerate(attrs.items()):
-            if i >= 8:
-                lines.append(f"  ... (+{len(attrs) - 8} más)")
+            if i >= 10:
+                lines.append(f"  ... (+{len(attrs) - 10} más)")
                 break
             lines.append(f"  • {k}: {v}")
     
     # Credibilidad
-    total = pdp_data.get('total_comments', 0)
-    if total > 0:
+    total = pdp_data.get('total_comments') or pdp_data.get('totalComments', 0)
+    if total and total > 0:
         lines.append(f"\n**⭐ VALORACIONES:** {total} opiniones de compradores")
     
     # Ventajas (procesadas)
@@ -145,13 +279,232 @@ def _format_product_section(pdp_data: Optional[Dict]) -> tuple:
     return "\n".join(lines), has_feedback
 
 
+def _format_pdp_links_with_data(links_data: Optional[List[Dict]]) -> str:
+    """
+    Formatea enlaces PDP incluyendo datos de producto de cada uno.
+    
+    Args:
+        links_data: Lista de enlaces [{url, anchor, type, product_data}]
+        
+    Returns:
+        Sección formateada para el prompt
+    """
+    if not links_data:
+        return ""
+    
+    lines = []
+    lines.append("\n## 🔗 ENLACES OBLIGATORIOS")
+    lines.append("Incluye TODOS estos enlaces de forma natural en el contenido.\n")
+    
+    pdp_with_data = []
+    other_links = []
+    
+    for link in links_data:
+        if link.get('product_data'):
+            pdp_with_data.append(link)
+        else:
+            other_links.append(link)
+    
+    # Primero enlaces con datos de producto
+    if pdp_with_data:
+        lines.append("### 🛒 Productos con datos (enriquece el contenido con esta info):\n")
+        
+        for i, link in enumerate(pdp_with_data, 1):
+            url = link.get('url', '')
+            anchor = link.get('anchor', '')
+            pdata = link.get('product_data', {})
+            
+            lines.append(f"**{i}. [{anchor}]({url})**")
+            
+            # Info del producto
+            title = pdata.get('title', '')
+            if title:
+                lines.append(f"   • Producto: {title}")
+            
+            brand = pdata.get('brand_name', '')
+            if brand:
+                lines.append(f"   • Marca: {brand}")
+            
+            # Ventajas breves
+            advs = pdata.get('advantages_list', [])[:3]
+            if advs:
+                lines.append(f"   • Puntos fuertes: {', '.join(advs)}")
+            
+            # Desventajas breves
+            disadvs = pdata.get('disadvantages_list', [])[:2]
+            if disadvs:
+                lines.append(f"   • A considerar: {', '.join(disadvs)}")
+            
+            lines.append("")
+    
+    # Luego enlaces sin datos
+    if other_links:
+        lines.append("### 🔗 Enlaces adicionales:\n")
+        for i, link in enumerate(other_links, 1):
+            url = link.get('url', '')
+            anchor = link.get('anchor', '')
+            ltype = link.get('type', 'interno')
+            lines.append(f"{i}. [{anchor}]({url}) - {ltype}")
+    
+    return "\n".join(lines)
+
+
+def _format_alternative_product(alternative_product: Optional[Dict]) -> str:
+    """
+    Formatea producto alternativo incluyendo datos JSON si disponibles.
+    
+    Args:
+        alternative_product: Dict con url, name y opcionalmente json_data
+        
+    Returns:
+        Sección formateada
+    """
+    if not alternative_product:
+        return ""
+    
+    url = alternative_product.get('url', '')
+    name = alternative_product.get('name', 'Alternativa')
+    json_data = alternative_product.get('json_data')
+    
+    if not url and not json_data:
+        return ""
+    
+    lines = []
+    lines.append("\n## 🔄 PRODUCTO ALTERNATIVO A MENCIONAR")
+    lines.append("Incluye este producto como alternativa en el contenido.\n")
+    
+    if json_data:
+        # Tenemos datos completos
+        title = json_data.get('title', name)
+        brand = json_data.get('brand_name', '')
+        
+        lines.append(f"**Producto:** {title}")
+        if brand:
+            lines.append(f"**Marca:** {brand}")
+        if url:
+            lines.append(f"**URL:** {url}")
+        
+        # Atributos clave
+        attrs = json_data.get('attributes', {})
+        if attrs:
+            key_attrs = list(attrs.items())[:5]
+            lines.append("\n**Características clave:**")
+            for k, v in key_attrs:
+                lines.append(f"  • {k}: {v}")
+        
+        # Ventajas
+        advs = json_data.get('advantages_list', [])[:4]
+        if advs:
+            lines.append("\n**Puntos fuertes:**")
+            for adv in advs:
+                lines.append(f"  ✓ {adv}")
+        
+        # Por qué recomendarlo
+        lines.append("\n**Cómo mencionarlo:**")
+        lines.append("  - Como alternativa para un perfil diferente de usuario")
+        lines.append("  - Cuando el producto principal no encaje con ciertas necesidades")
+        lines.append("  - En la sección de veredicto como opción complementaria")
+    else:
+        # Solo URL y nombre
+        lines.append(f"- **{name}**: {url}")
+        lines.append("\nMenciónalo como alternativa sin inventar características.")
+    
+    return "\n".join(lines)
+
+
+def _format_visual_elements_instructions(visual_elements: Optional[List[str]]) -> str:
+    """
+    Genera instrucciones para elementos visuales seleccionados.
+    
+    Args:
+        visual_elements: Lista de elementos ['toc', 'table', 'callout', etc.]
+        
+    Returns:
+        Instrucciones para el prompt
+    """
+    if not visual_elements:
+        return ""
+    
+    lines = []
+    lines.append("\n## 🎨 ELEMENTOS VISUALES A INCLUIR")
+    lines.append("El usuario ha solicitado estos elementos. Inclúyelos donde corresponda:\n")
+    
+    element_instructions = {
+        'toc': """**📑 Tabla de Contenidos (TOC):**
+```html
+<nav class="toc">
+    <p class="toc__title">En este artículo</p>
+    <ol class="toc__list">
+        <li><a href="#seccion1">Sección 1</a></li>
+        <!-- Más secciones -->
+    </ol>
+</nav>
+```
+Colócala después del H2 principal.""",
+
+        'table': """**📊 Tabla Comparativa:**
+```html
+<table>
+    <thead>
+        <tr><th>Característica</th><th>Producto A</th><th>Producto B</th></tr>
+    </thead>
+    <tbody>
+        <tr><td>Spec</td><td>Valor</td><td>Valor</td></tr>
+    </tbody>
+</table>
+```
+Úsala para comparar productos o características de forma visual.""",
+
+        'callout': """**💡 Callouts/Destacados:**
+```html
+<div class="callout">
+    <p><strong>💡 Consejo:</strong> Información importante destacada.</p>
+</div>
+```
+Usa callouts para tips, advertencias o información clave.""",
+
+        'callout_bf': """**🔥 Callout Black Friday:**
+```html
+<div class="callout-bf">
+    <p>🔥 <strong>OFERTA BLACK FRIDAY</strong> 🔥</p>
+    <p>Descripción de la oferta especial.</p>
+</div>
+```
+Para destacar ofertas especiales o promociones.""",
+
+        'verdict_box': """**✅ Verdict Box (OBLIGATORIO):**
+```html
+<div class="verdict-box">
+    <h2>Veredicto Final</h2>
+    <p>Conclusión honesta que APORTE valor real...</p>
+</div>
+```
+Siempre al final, con conclusión que aporte, no que resuma.""",
+
+        'grid': """**📐 Grid Layout:**
+```html
+<div class="grid-layout">
+    <div class="grid-item">
+        <h4>Producto 1</h4>
+        <p>Descripción breve...</p>
+    </div>
+    <!-- Más items -->
+</div>
+```
+Para mostrar múltiples productos o características en rejilla.""",
+    }
+    
+    for elem in visual_elements:
+        if elem in element_instructions:
+            lines.append(element_instructions[elem])
+            lines.append("")
+    
+    return "\n".join(lines)
+
+
 def _get_data_usage_instructions(has_data: bool, has_feedback: bool) -> str:
     """
     Genera instrucciones específicas según los datos disponibles.
-    
-    Args:
-        has_data: Si hay datos de producto
-        has_feedback: Si hay feedback de usuarios (ventajas/desventajas/opiniones)
     """
     if has_data and has_feedback:
         return """
@@ -205,6 +558,7 @@ def build_new_content_prompt_stage1(
     arquetipo: Dict[str, Any],
     target_length: int = 1500,
     pdp_data: Optional[Dict] = None,
+    pdp_json_data: Optional[Dict] = None,  # NUEVO v4.9.0
     links_data: Optional[List[Dict]] = None,
     secondary_keywords: Optional[List[str]] = None,
     additional_instructions: str = "",
@@ -218,18 +572,25 @@ def build_new_content_prompt_stage1(
     
     Funciona igual de bien CON o SIN datos de producto.
     
+    NUEVO v4.9.0:
+    - Fusiona pdp_data + pdp_json_data
+    - Procesa product_data en enlaces PDP
+    - Usa alternative_product.json_data
+    - Implementa visual_elements
+    
     Args:
         keyword: Keyword principal
         arquetipo: Dict con name, description del arquetipo
         target_length: Longitud objetivo en palabras
-        pdp_data: Dict con datos del producto (de PDPProductData.to_dict())
+        pdp_data: Dict con datos del producto (de n8n webhook)
+        pdp_json_data: Dict con datos del JSON subido (NUEVO - tiene prioridad)
         links_data: Lista de enlaces [{url, anchor, type, product_data}]
         secondary_keywords: Keywords secundarias
         additional_instructions: Instrucciones adicionales del usuario
         campos_especificos: Campos específicos del arquetipo
-        visual_elements: Elementos visuales a incluir
+        visual_elements: Elementos visuales a incluir ['toc', 'table', etc.]
         guiding_context: Contexto guía del usuario
-        alternative_product: Producto alternativo a mencionar
+        alternative_product: Producto alternativo {url, name, json_data}
         
     Returns:
         Prompt completo para Claude
@@ -237,9 +598,12 @@ def build_new_content_prompt_stage1(
     arquetipo_name = arquetipo.get('name', 'Contenido SEO')
     arquetipo_desc = arquetipo.get('description', '')
     
-    # Formatear producto
-    product_section, has_feedback = _format_product_section(pdp_data)
-    has_product_data = bool(pdp_data)
+    # NUEVO: Fusionar datos de producto
+    merged_product_data = _merge_product_data(pdp_data, pdp_json_data)
+    
+    # Formatear producto principal
+    product_section, has_feedback = _format_product_section(merged_product_data)
+    has_product_data = bool(merged_product_data)
     
     # Instrucciones de tono (adapta según si hay datos)
     tone_instructions = get_tone_instructions(has_product_data)
@@ -247,15 +611,8 @@ def build_new_content_prompt_stage1(
     # Instrucciones de uso de datos
     data_instructions = _get_data_usage_instructions(has_product_data, has_feedback)
     
-    # Enlaces
-    links_section = ""
-    if links_data:
-        links_section = "\n## 🔗 ENLACES OBLIGATORIOS (USA SOLO ESTOS)\n"
-        for i, link in enumerate(links_data, 1):
-            url = link.get('url', '')
-            anchor = link.get('anchor', '')
-            ltype = link.get('type', 'interno')
-            links_section += f"{i}. **[{anchor}]({url})** - {ltype}\n"
+    # NUEVO: Enlaces con datos de producto
+    links_section = _format_pdp_links_with_data(links_data)
     
     # Keywords secundarias
     sec_kw = ""
@@ -265,10 +622,19 @@ def build_new_content_prompt_stage1(
     # Contexto guía
     context = f"\n## 📖 CONTEXTO DEL USUARIO\n{guiding_context}\n" if guiding_context else ""
     
-    # Producto alternativo
-    alt_prod = ""
-    if alternative_product and alternative_product.get('url'):
-        alt_prod = f"\n## 🔄 PRODUCTO ALTERNATIVO A MENCIONAR\n- {alternative_product.get('name', 'Alternativa')} ({alternative_product['url']})\n"
+    # NUEVO: Producto alternativo con datos JSON
+    alt_prod = _format_alternative_product(alternative_product)
+    
+    # NUEVO: Elementos visuales
+    visual_section = _format_visual_elements_instructions(visual_elements)
+    
+    # Campos específicos del arquetipo
+    campos_section = ""
+    if campos_especificos:
+        campos_section = "\n## 📋 CAMPOS ESPECÍFICOS DEL ARQUETIPO\n"
+        for key, value in campos_especificos.items():
+            if value:
+                campos_section += f"- **{key}:** {value}\n"
     
     # Construir prompt
     prompt = f"""Eres un redactor SEO de PcComponentes, la tienda líder de tecnología en España.
@@ -292,6 +658,8 @@ Genera un BORRADOR tipo "{arquetipo_name}" para la keyword "{keyword}".
 {sec_kw}
 {context}
 {alt_prod}
+{visual_section}
+{campos_section}
 
 ## ESTRUCTURA HTML REQUERIDA
 
@@ -348,9 +716,11 @@ El HTML debe empezar DIRECTAMENTE con <style>:
 2. ✅ Empieza DIRECTAMENTE con `<style>`
 3. ✅ FAQs DEBEN incluir keyword: "Preguntas frecuentes sobre {keyword}"
 4. ✅ Si tienes datos de usuarios, ÚSALOS (ventajas/desventajas)
-5. ✅ SÉ HONESTO: si hay "peros", menciónalos
-6. ✅ **EVITA frases de IA:** "en el mundo actual", "sin lugar a dudas", etc.
-7. ✅ El veredicto debe APORTAR, no solo resumir
+5. ✅ Si tienes datos de productos enlazados, MENCIÓNALOS con sus características
+6. ✅ SÉ HONESTO: si hay "peros", menciónalos
+7. ✅ **EVITA frases de IA:** "en el mundo actual", "sin lugar a dudas", etc.
+8. ✅ El veredicto debe APORTAR, no solo resumir
+9. ✅ Incluye TODOS los enlaces proporcionados con su anchor text exacto
 
 **Genera el HTML ahora:**
 """
@@ -381,15 +751,25 @@ def build_new_content_correction_prompt_stage2(
     Returns:
         Prompt para análisis
     """
+    # Verificación de enlaces
     links_check = ""
     if links_to_verify:
         links_check = "\n## ENLACES A VERIFICAR\n"
+        links_check += "Cada uno de estos enlaces DEBE aparecer en el contenido:\n"
         for link in links_to_verify:
-            links_check += f"- [{link.get('anchor', '')}]({link.get('url', '')})\n"
+            anchor = link.get('anchor', '')
+            url = link.get('url', '')
+            has_data = "✓ con datos" if link.get('product_data') else ""
+            links_check += f"- [{anchor}]({url}) {has_data}\n"
     
+    # Verificación de producto alternativo
     alt_check = ""
-    if alternative_product and alternative_product.get('url'):
-        alt_check = f"\n## PRODUCTO ALTERNATIVO QUE DEBE APARECER\n- {alternative_product.get('name', '')} ({alternative_product['url']})\n"
+    if alternative_product:
+        url = alternative_product.get('url', '')
+        name = alternative_product.get('name', '')
+        has_json = "✓ con datos JSON" if alternative_product.get('json_data') else ""
+        if url or name:
+            alt_check = f"\n## PRODUCTO ALTERNATIVO QUE DEBE APARECER\n- {name} ({url}) {has_json}\n"
     
     return f"""Eres un editor SEO senior de PcComponentes. Analiza críticamente este borrador.
 
@@ -425,8 +805,14 @@ def build_new_content_correction_prompt_stage2(
 
 ## 4. SEO Y CONTENIDO
 - [ ] ¿La keyword aparece de forma natural?
-- [ ] ¿Los enlaces proporcionados están incluidos?
+- [ ] ¿TODOS los enlaces proporcionados están incluidos?
+- [ ] ¿Se mencionan los datos de los productos enlazados?
 - [ ] ¿La longitud es aproximada al objetivo?
+
+## 5. DATOS DE PRODUCTO (si aplica)
+- [ ] ¿Se usan las ventajas/desventajas proporcionadas?
+- [ ] ¿Se menciona el producto alternativo?
+- [ ] ¿Los datos de productos enlazados enriquecen el contenido?
 
 ---
 
@@ -457,12 +843,20 @@ def build_new_content_correction_prompt_stage2(
     
     "enlaces": {{
         "presentes": [],
-        "faltantes": []
+        "faltantes": [],
+        "con_datos_usados": []
+    }},
+    
+    "datos_producto": {{
+        "usa_ventajas": false,
+        "usa_desventajas": false,
+        "menciona_alternativa": false,
+        "datos_pdp_links_usados": false
     }},
     
     "problemas": [
         {{
-            "tipo": "estructura|seo|tono|formato",
+            "tipo": "estructura|seo|tono|formato|datos",
             "severidad": "critico|alto|medio|bajo",
             "descripcion": "...",
             "solucion": "..."
@@ -504,21 +898,46 @@ def build_final_prompt_stage3(
         analysis_feedback: Feedback del análisis (JSON o texto)
         keyword: Keyword principal
         target_length: Longitud objetivo
-        links_data: Enlaces obligatorios
-        alternative_product: Producto alternativo
+        links_data: Enlaces obligatorios (ahora con product_data)
+        alternative_product: Producto alternativo (ahora con json_data)
         
     Returns:
         Prompt para generación final
     """
+    # Enlaces con datos
     links_section = ""
     if links_data:
-        links_section = "\n## ENLACES OBLIGATORIOS\n"
+        links_section = "\n## ENLACES OBLIGATORIOS (con datos si disponibles)\n"
         for i, link in enumerate(links_data, 1):
-            links_section += f"{i}. [{link.get('anchor', '')}]({link.get('url', '')})\n"
+            anchor = link.get('anchor', '')
+            url = link.get('url', '')
+            pdata = link.get('product_data')
+            
+            links_section += f"{i}. [{anchor}]({url})"
+            if pdata:
+                title = pdata.get('title', '')
+                if title:
+                    links_section += f" - {title}"
+            links_section += "\n"
     
+    # Producto alternativo
     alt_section = ""
-    if alternative_product and alternative_product.get('url'):
-        alt_section = f"\n## PRODUCTO ALTERNATIVO\n- {alternative_product.get('name', '')} ({alternative_product['url']})\n"
+    if alternative_product:
+        url = alternative_product.get('url', '')
+        name = alternative_product.get('name', '')
+        json_data = alternative_product.get('json_data')
+        
+        if url or json_data:
+            alt_section = f"\n## PRODUCTO ALTERNATIVO\n"
+            if json_data:
+                title = json_data.get('title', name)
+                brand = json_data.get('brand_name', '')
+                alt_section += f"- **{title}** ({brand}) - {url}\n"
+                advs = json_data.get('advantages_list', [])[:3]
+                if advs:
+                    alt_section += f"  Puntos fuertes: {', '.join(advs)}\n"
+            else:
+                alt_section += f"- {name} ({url})\n"
     
     return f"""Genera la VERSIÓN FINAL corregida como editor SEO senior de PcComponentes.
 
@@ -582,7 +1001,9 @@ def build_final_prompt_stage3(
 4. ✅ FAQs: "Preguntas frecuentes sobre {keyword}"
 5. ✅ Incluye verdict-box
 6. ✅ Aplica TODAS las correcciones del análisis
-7. ✅ Tono PcComponentes en cada párrafo
+7. ✅ Incluye TODOS los enlaces con datos de producto si disponibles
+8. ✅ Menciona el producto alternativo si lo hay
+9. ✅ Tono PcComponentes en cada párrafo
 
 **Genera SOLO el HTML final, sin explicaciones:**
 """
@@ -617,8 +1038,11 @@ def get_element_template(name: str) -> str:
     """Retorna plantilla de elemento."""
     templates = {
         'callout': '<div class="callout"><p><strong>💡 Dato:</strong> [Contenido]</p></div>',
+        'callout_bf': '<div class="callout-bf"><p>🔥 <strong>OFERTA</strong> 🔥</p><p>[Contenido]</p></div>',
         'verdict_box': '<div class="verdict-box"><h2>Veredicto Final</h2><p>[Conclusión]</p></div>',
         'table': '<table><thead><tr><th>Característica</th><th>Valor</th></tr></thead><tbody><tr><td>...</td><td>...</td></tr></tbody></table>',
+        'grid': '<div class="grid-layout"><div class="grid-item">...</div></div>',
+        'product_module': '<div class="product-module"><h4>[Producto]</h4><p>[Descripción]</p></div>',
     }
     return templates.get(name, "")
 
