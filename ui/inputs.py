@@ -1,12 +1,17 @@
 # -*- coding: utf-8 -*-
 """
 UI Inputs - PcComponentes Content Generator
-Versión 4.5.2
+Versión 4.5.3
 
 Componentes de entrada para la interfaz Streamlit.
 Incluye: validación, anchor text, preguntas guía, producto alternativo,
 fecha GSC, análisis de canibalización, campo HTML para reescritura,
 integración con n8n para obtener datos de producto, CARGA DE JSON DE PRODUCTOS.
+
+CAMBIOS v4.5.3:
+- Añadida opción de PEGAR JSON además de subir archivo
+- Tabs en widgets de JSON: "Subir archivo" / "Pegar JSON"
+- Aplicado en: producto principal, enlaces PDP, producto alternativo
 
 CAMBIOS v4.5.2:
 - Añadida descripción del arquetipo bajo el selector
@@ -64,7 +69,7 @@ logger = logging.getLogger(__name__)
 # CONSTANTES
 # ============================================================================
 
-__version__ = "4.5.2"
+__version__ = "4.5.3"
 
 DEFAULT_CONTENT_LENGTH = 1500
 MIN_CONTENT_LENGTH = 500
@@ -513,22 +518,42 @@ def render_product_url_with_fetch(
     💡 **Obtén el JSON completo del producto** usando nuestro workflow de n8n:
     
     [🔗 Abrir Workflow de n8n]({N8N_PRODUCT_JSON_WORKFLOW})
-    
-    Una vez obtengas el JSON, súbelo aquí para enriquecer el contenido con datos estructurados.
     """)
     
-    uploaded_json = st.file_uploader(
-        "Subir JSON del producto (desde workflow n8n)",
-        type=['json'],
-        key=f"{key}_json_upload",
-        help="JSON generado por el workflow de n8n con información completa del producto"
-    )
+    # Tabs para subir o pegar JSON
+    json_tab1, json_tab2 = st.tabs(["📁 Subir archivo", "📋 Pegar JSON"])
     
-    if uploaded_json is not None:
+    json_content = None
+    
+    with json_tab1:
+        uploaded_json = st.file_uploader(
+            "Subir JSON del producto",
+            type=['json'],
+            key=f"{key}_json_upload",
+            help="JSON generado por el workflow de n8n"
+        )
+        
+        if uploaded_json is not None:
+            try:
+                json_content = uploaded_json.read().decode('utf-8')
+            except Exception as e:
+                st.error(f"❌ Error al leer archivo: {str(e)}")
+    
+    with json_tab2:
+        pasted_json = st.text_area(
+            "Pegar JSON aquí",
+            height=150,
+            key=f"{key}_json_paste",
+            placeholder='{"id": "...", "name": "...", ...}',
+            help="Pega el JSON directamente desde el workflow de n8n"
+        )
+        
+        if pasted_json and pasted_json.strip():
+            json_content = pasted_json.strip()
+    
+    # Procesar JSON (ya sea de archivo o pegado)
+    if json_content:
         try:
-            # Leer y parsear JSON
-            json_content = uploaded_json.read().decode('utf-8')
-            
             # Validar estructura
             if _product_json_available:
                 is_valid, error_msg = validate_product_json(json_content)
@@ -941,21 +966,43 @@ def _render_single_pdp_link(
             help="Texto visible del enlace"
         )
     
-    # Widget de JSON
+    # Widget de JSON con tabs
     json_key = f"{key_prefix}_json_{i}"
-    uploaded_json = st.file_uploader(
-        f"📦 JSON del producto {i+1} (opcional)",
-        type=['json'],
-        key=f"{key_prefix}_json_upload_{i}",
-        help="JSON con datos estructurados del producto"
-    )
+    
+    with st.expander(f"📦 JSON del producto {i+1} (opcional)", expanded=False):
+        json_tab1, json_tab2 = st.tabs(["📁 Subir", "📋 Pegar"])
+        
+        json_content = None
+        
+        with json_tab1:
+            uploaded_json = st.file_uploader(
+                f"Subir JSON",
+                type=['json'],
+                key=f"{key_prefix}_json_upload_{i}",
+                help="JSON con datos del producto"
+            )
+            
+            if uploaded_json is not None:
+                try:
+                    json_content = uploaded_json.read().decode('utf-8')
+                except Exception as e:
+                    st.error(f"❌ Error: {str(e)}")
+        
+        with json_tab2:
+            pasted_json = st.text_area(
+                "Pegar JSON",
+                height=100,
+                key=f"{key_prefix}_json_paste_{i}",
+                placeholder='{"id": "...", ...}'
+            )
+            
+            if pasted_json and pasted_json.strip():
+                json_content = pasted_json.strip()
     
     product_json_data = None
     
-    if uploaded_json is not None:
+    if json_content:
         try:
-            json_content = uploaded_json.read().decode('utf-8')
-            
             if _product_json_available:
                 is_valid, error_msg = validate_product_json(json_content)
                 
@@ -1172,19 +1219,41 @@ def render_alternative_product_input(
     [🔗 Obtener JSON desde n8n]({N8N_PRODUCT_JSON_WORKFLOW})
     """)
     
-    uploaded_json = st.file_uploader(
-        "📦 JSON del producto alternativo (opcional)",
-        type=['json'],
-        key=f"{key_prefix}_json_upload",
-        help="JSON con datos estructurados del producto alternativo"
-    )
+    # Tabs para subir o pegar JSON
+    json_tab1, json_tab2 = st.tabs(["📁 Subir archivo", "📋 Pegar JSON"])
+    
+    json_content = None
+    
+    with json_tab1:
+        uploaded_json = st.file_uploader(
+            "📦 JSON del producto alternativo",
+            type=['json'],
+            key=f"{key_prefix}_json_upload",
+            help="JSON con datos estructurados del producto"
+        )
+        
+        if uploaded_json is not None:
+            try:
+                json_content = uploaded_json.read().decode('utf-8')
+            except Exception as e:
+                st.error(f"❌ Error al leer archivo: {str(e)}")
+    
+    with json_tab2:
+        pasted_json = st.text_area(
+            "Pegar JSON aquí",
+            height=150,
+            key=f"{key_prefix}_json_paste",
+            placeholder='{"id": "...", "name": "...", ...}',
+            help="Pega el JSON directamente"
+        )
+        
+        if pasted_json and pasted_json.strip():
+            json_content = pasted_json.strip()
     
     product_json_data = None
     
-    if uploaded_json is not None:
+    if json_content:
         try:
-            json_content = uploaded_json.read().decode('utf-8')
-            
             if _product_json_available:
                 is_valid, error_msg = validate_product_json(json_content)
                 
