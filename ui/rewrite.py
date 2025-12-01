@@ -1,7 +1,7 @@
 # -*- coding: utf-8 -*-
 """
 UI de Reescritura - PcComponentes Content Generator
-Versión 4.5.0
+Versión 4.5.1
 
 Este módulo maneja la interfaz de usuario para el modo REESCRITURA,
 que analiza contenido competidor y genera una versión mejorada.
@@ -11,6 +11,8 @@ Incluye:
 - Integración con SEMrush API para datos reales de competidores
 - Fallback a entrada manual si SEMrush no está disponible
 - Verificación GSC para evitar canibalización
+- NUEVO: Secciones diferenciadas para enlaces a posts/PLPs y productos
+- NUEVO: Carga de JSON de productos para enlaces de productos
 
 Flujo:
 1. Input de keyword principal
@@ -19,7 +21,9 @@ Flujo:
 4. Obtención de competidores (SEMrush API o manual)
 5. Análisis competitivo de contenido
 6. Configuración de parámetros adicionales
-7. Generación del contenido mejorado en 3 etapas
+7. Enlaces a posts/PLPs (NUEVO - sin JSON)
+8. Enlaces a productos (NUEVO - con JSON opcional)
+9. Generación del contenido mejorado en 3 etapas
 
 Autor: PcComponentes - Product Discovery & Content
 """
@@ -60,12 +64,26 @@ try:
 except ImportError:
     SEMRUSH_MODULE_AVAILABLE = False
 
+# Importar utilidades de JSON de productos
+try:
+    from utils.product_json_utils import (
+        parse_product_json,
+        validate_product_json,
+        format_product_for_prompt,
+        create_product_summary,
+        N8N_PRODUCT_JSON_WORKFLOW
+    )
+    _product_json_available = True
+except ImportError:
+    _product_json_available = False
+    N8N_PRODUCT_JSON_WORKFLOW = "https://n8n.prod.pccomponentes.com/workflow/jsjhKAdZFBSM5XFV/d6c3eb"
+
 
 # ============================================================================
 # VERSIÓN Y CONSTANTES
 # ============================================================================
 
-__version__ = "4.5.0"
+__version__ = "4.5.1"
 
 MAX_COMPETITORS = 10
 DEFAULT_REWRITE_LENGTH = 1600
@@ -87,6 +105,8 @@ def render_rewrite_section() -> Tuple[bool, Dict]:
     - Obtención de competidores (SEMrush o manual)
     - Análisis competitivo
     - Configuración de parámetros de generación
+    - Enlaces a posts/PLPs (NUEVO)
+    - Enlaces a productos con JSON (NUEVO)
     - Botón de inicio de generación
     
     Returns:
@@ -191,6 +211,26 @@ def render_rewrite_section() -> Tuple[bool, Dict]:
     
     rewrite_config = render_rewrite_configuration(keyword)
     
+    # =========================================================================
+    # PASO 5: Enlaces a Posts/PLPs (NUEVO)
+    # =========================================================================
+    st.markdown("---")
+    st.markdown("### 🔗 Paso 5: Enlaces a Incluir")
+    
+    # Sección 1: Posts/PLPs
+    with st.expander("📝 Enlaces a Posts / PLPs (Contenido Editorial)", expanded=True):
+        st.info("💡 **Enlaces a contenido editorial**: Posts, guías, categorías, PLPs, etc. (SIN datos de producto)")
+        posts_plps_links = render_posts_plps_links_section()
+    
+    # Sección 2: Productos con JSON
+    with st.expander("🛒 Enlaces a Productos (con datos estructurados)", expanded=True):
+        st.info(f"💡 **Enlaces a productos**: PDPs con opción de cargar JSON. [Workflow n8n]({N8N_PRODUCT_JSON_WORKFLOW})")
+        product_links = render_product_links_section()
+    
+    # =========================================================================
+    # VALIDAR Y PREPARAR
+    # =========================================================================
+    
     # Validar que todo esté listo para generar
     can_generate = validate_rewrite_inputs(
         keyword,
@@ -215,7 +255,9 @@ def render_rewrite_section() -> Tuple[bool, Dict]:
         competitors_data=st.session_state.rewrite_competitors_data,
         rewrite_config=rewrite_config,
         gsc_analysis=gsc_analysis,
-        html_to_rewrite=html_to_rewrite
+        html_to_rewrite=html_to_rewrite,
+        posts_plps_links=posts_plps_links,  # NUEVO
+        product_links=product_links  # NUEVO
     )
     
     return True, full_config
@@ -242,6 +284,11 @@ def _initialize_rewrite_state() -> None:
         st.session_state.semrush_response = None
     if 'html_to_rewrite' not in st.session_state:
         st.session_state.html_to_rewrite = ''
+    # NUEVO: Estado para enlaces
+    if 'rewrite_posts_plps_count' not in st.session_state:
+        st.session_state.rewrite_posts_plps_count = 1
+    if 'rewrite_product_links_count' not in st.session_state:
+        st.session_state.rewrite_product_links_count = 1
 
 
 # ============================================================================
@@ -342,6 +389,228 @@ def _strip_html_tags(html: str) -> str:
     # Limpiar espacios múltiples
     text = re.sub(r'\s+', ' ', text)
     return text.strip()
+
+
+# ============================================================================
+# SECCIÓN: ENLACES A POSTS/PLPs (NUEVO)
+# ============================================================================
+
+def render_posts_plps_links_section() -> List[Dict[str, str]]:
+    """
+    Renderiza la sección de enlaces a posts/PLPs (contenido editorial).
+    SIN carga de JSON - solo URL y anchor text.
+    
+    Returns:
+        Lista de dicts con {'url': str, 'anchor': str}
+    """
+    count_key = 'rewrite_posts_plps_count'
+    current_count = st.session_state.get(count_key, 1)
+    
+    links = []
+    
+    for i in range(current_count):
+        col1, col2, col3 = st.columns([5, 4, 1])
+        
+        with col1:
+            url = st.text_input(
+                f"URL {i+1}",
+                key=f"rewrite_posts_url_{i}",
+                placeholder="https://www.pccomponentes.com/...",
+                help="URL del post, guía, categoría o PLP",
+                label_visibility="collapsed"
+            )
+        
+        with col2:
+            anchor = st.text_input(
+                f"Anchor {i+1}",
+                key=f"rewrite_posts_anchor_{i}",
+                placeholder="Texto del enlace",
+                help="Texto visible del enlace",
+                label_visibility="collapsed"
+            )
+        
+        with col3:
+            if current_count > 1:
+                if st.button("🗑️", key=f"rewrite_posts_del_{i}", help="Eliminar"):
+                    # Shift hacia arriba
+                    for j in range(i, current_count - 1):
+                        next_url = st.session_state.get(f"rewrite_posts_url_{j+1}", "")
+                        next_anchor = st.session_state.get(f"rewrite_posts_anchor_{j+1}", "")
+                        st.session_state[f"rewrite_posts_url_{j}"] = next_url
+                        st.session_state[f"rewrite_posts_anchor_{j}"] = next_anchor
+                    
+                    # Limpiar última
+                    last_idx = current_count - 1
+                    if f"rewrite_posts_url_{last_idx}" in st.session_state:
+                        del st.session_state[f"rewrite_posts_url_{last_idx}"]
+                    if f"rewrite_posts_anchor_{last_idx}" in st.session_state:
+                        del st.session_state[f"rewrite_posts_anchor_{last_idx}"]
+                    
+                    st.session_state[count_key] = max(1, current_count - 1)
+                    st.rerun()
+        
+        if url and url.strip():
+            links.append({
+                'url': url.strip(),
+                'anchor': anchor.strip() if anchor else '',
+                'type': 'editorial'
+            })
+    
+    # Botón añadir
+    if current_count < 10:
+        if st.button("➕ Añadir enlace a post/PLP", key="rewrite_posts_add"):
+            st.session_state[count_key] = current_count + 1
+            st.rerun()
+    
+    if links:
+        st.caption(f"✅ {len(links)} enlace(s) a contenido editorial configurado(s)")
+    
+    return links
+
+
+# ============================================================================
+# SECCIÓN: ENLACES A PRODUCTOS CON JSON (NUEVO)
+# ============================================================================
+
+def render_product_links_section() -> List[Dict[str, any]]:
+    """
+    Renderiza la sección de enlaces a productos CON opción de cargar JSON.
+    
+    Returns:
+        Lista de dicts con {'url': str, 'anchor': str, 'product_data': dict|None}
+    """
+    count_key = 'rewrite_product_links_count'
+    current_count = st.session_state.get(count_key, 1)
+    
+    links = []
+    
+    for i in range(current_count):
+        with st.expander(f"🛒 Producto {i+1}", expanded=(i == 0)):
+            # URL y anchor
+            col1, col2 = st.columns([3, 2])
+            
+            with col1:
+                url = st.text_input(
+                    f"URL del producto {i+1}",
+                    key=f"rewrite_prod_url_{i}",
+                    placeholder="https://www.pccomponentes.com/producto",
+                    help="URL del PDP"
+                )
+            
+            with col2:
+                anchor = st.text_input(
+                    f"Anchor text {i+1}",
+                    key=f"rewrite_prod_anchor_{i}",
+                    placeholder="Texto del enlace",
+                    help="Texto visible"
+                )
+            
+            # Widget JSON
+            json_key = f"rewrite_prod_json_{i}"
+            uploaded_json = st.file_uploader(
+                f"📦 JSON del producto {i+1} (opcional)",
+                type=['json'],
+                key=f"rewrite_prod_json_upload_{i}",
+                help="JSON con datos estructurados del producto"
+            )
+            
+            product_json_data = None
+            
+            if uploaded_json is not None:
+                try:
+                    json_content = uploaded_json.read().decode('utf-8')
+                    
+                    if _product_json_available:
+                        is_valid, error_msg = validate_product_json(json_content)
+                        
+                        if is_valid:
+                            product_data = parse_product_json(json_content)
+                            
+                            if product_data:
+                                product_json_data = {
+                                    'product_id': product_data.product_id,
+                                    'legacy_id': product_data.legacy_id,
+                                    'title': product_data.title,
+                                    'description': product_data.description,
+                                    'brand_name': product_data.brand_name,
+                                    'family_name': product_data.family_name,
+                                    'attributes': product_data.attributes,
+                                    'images': product_data.images,
+                                    'totalComments': product_data.totalComments,
+                                    'advantages': product_data.advantages,
+                                    'disadvantages': product_data.disadvantages,
+                                    'comments': product_data.comments,
+                                }
+                                
+                                st.session_state[json_key] = product_json_data
+                                st.success(f"✅ JSON: {product_data.title[:50]}")
+                            else:
+                                st.error("❌ Error al parsear JSON")
+                        else:
+                            st.error(f"❌ {error_msg}")
+                    else:
+                        # Fallback
+                        parsed_json = json.loads(json_content)
+                        st.session_state[json_key] = parsed_json
+                        st.success("✅ JSON cargado")
+                        product_json_data = parsed_json
+                        
+                except Exception as e:
+                    st.error(f"❌ Error: {str(e)}")
+            
+            # Recuperar JSON si ya estaba cargado
+            if json_key in st.session_state and not product_json_data:
+                product_json_data = st.session_state[json_key]
+                if product_json_data:
+                    title = product_json_data.get('title', 'Producto')
+                    st.caption(f"📦 JSON cargado: {title[:40]}")
+            
+            # Botón eliminar
+            if current_count > 1:
+                if st.button("🗑️ Eliminar producto", key=f"rewrite_prod_del_{i}"):
+                    # Shift hacia arriba
+                    for j in range(i, current_count - 1):
+                        next_url = st.session_state.get(f"rewrite_prod_url_{j+1}", "")
+                        next_anchor = st.session_state.get(f"rewrite_prod_anchor_{j+1}", "")
+                        next_json = st.session_state.get(f"rewrite_prod_json_{j+1}")
+                        
+                        st.session_state[f"rewrite_prod_url_{j}"] = next_url
+                        st.session_state[f"rewrite_prod_anchor_{j}"] = next_anchor
+                        if next_json:
+                            st.session_state[f"rewrite_prod_json_{j}"] = next_json
+                    
+                    # Limpiar última
+                    last_idx = current_count - 1
+                    if f"rewrite_prod_url_{last_idx}" in st.session_state:
+                        del st.session_state[f"rewrite_prod_url_{last_idx}"]
+                    if f"rewrite_prod_anchor_{last_idx}" in st.session_state:
+                        del st.session_state[f"rewrite_prod_anchor_{last_idx}"]
+                    if f"rewrite_prod_json_{last_idx}" in st.session_state:
+                        del st.session_state[f"rewrite_prod_json_{last_idx}"]
+                    
+                    st.session_state[count_key] = max(1, current_count - 1)
+                    st.rerun()
+            
+            # Agregar a lista si hay URL
+            if url and url.strip():
+                links.append({
+                    'url': url.strip(),
+                    'anchor': anchor.strip() if anchor else '',
+                    'type': 'product',
+                    'product_data': product_json_data
+                })
+    
+    # Botón añadir
+    if current_count < 10:
+        if st.button("➕ Añadir producto", key="rewrite_prod_add"):
+            st.session_state[count_key] = current_count + 1
+            st.rerun()
+    
+    if links:
+        with_json = sum(1 for l in links if l.get('product_data'))
+        st.caption(f"✅ {len(links)} producto(s) configurado(s) ({with_json} con JSON)")
+    
+    return links
 
 
 # ============================================================================
@@ -828,67 +1097,6 @@ def render_rewrite_configuration(keyword: str) -> Dict:
         height=100
     )
     
-    # Enlaces - Múltiples
-    st.markdown("#### 🔗 Enlaces a Incluir")
-    
-    # Inicializar lista de enlaces en session_state si no existe
-    if 'rewrite_links' not in st.session_state:
-        st.session_state.rewrite_links = [{'url': '', 'text': ''}]
-    
-    # Mostrar cada enlace
-    links_to_remove = []
-    
-    for i, link in enumerate(st.session_state.rewrite_links):
-        col_url, col_text, col_remove = st.columns([5, 4, 1])
-        
-        with col_url:
-            new_url = st.text_input(
-                f"URL del enlace {i+1}",
-                value=link.get('url', ''),
-                placeholder="https://www.pccomponentes.com/categoria",
-                key=f"rewrite_link_url_{i}",
-                help="URL del enlace a incluir"
-            )
-            st.session_state.rewrite_links[i]['url'] = new_url
-        
-        with col_text:
-            new_text = st.text_input(
-                f"Texto anchor {i+1}",
-                value=link.get('text', ''),
-                placeholder="Ej: portátiles gaming",
-                key=f"rewrite_link_text_{i}",
-                help="Texto del enlace (natural y descriptivo)"
-            )
-            st.session_state.rewrite_links[i]['text'] = new_text
-        
-        with col_remove:
-            st.markdown("<br>", unsafe_allow_html=True)  # Espaciado
-            if len(st.session_state.rewrite_links) > 1:
-                if st.button("🗑️", key=f"remove_rewrite_link_{i}", help="Eliminar enlace"):
-                    links_to_remove.append(i)
-    
-    # Eliminar enlaces marcados
-    for idx in sorted(links_to_remove, reverse=True):
-        st.session_state.rewrite_links.pop(idx)
-        st.rerun()
-    
-    # Botón para añadir más enlaces
-    col_add, col_info = st.columns([1, 3])
-    with col_add:
-        if st.button("➕ Añadir enlace", key="add_rewrite_link"):
-            st.session_state.rewrite_links.append({'url': '', 'text': ''})
-            st.rerun()
-    
-    with col_info:
-        st.caption(f"📊 {len(st.session_state.rewrite_links)} enlace(s) configurado(s)")
-    
-    # Guardar enlaces válidos en config
-    config['enlaces'] = [
-        {'url': link['url'], 'text': link['text']}
-        for link in st.session_state.rewrite_links
-        if link.get('url', '').strip()
-    ]
-    
     # Producto alternativo (opcional)
     st.markdown("#### 🎯 Producto Alternativo (opcional)")
     
@@ -1090,7 +1298,9 @@ def prepare_rewrite_config(
     competitors_data: List[Dict],
     rewrite_config: Dict,
     gsc_analysis: Optional[Dict],
-    html_to_rewrite: str = ""
+    html_to_rewrite: str = "",
+    posts_plps_links: List[Dict] = None,  # NUEVO
+    product_links: List[Dict] = None  # NUEVO
 ) -> Dict:
     """
     Prepara la configuración completa para el proceso de generación.
@@ -1101,6 +1311,8 @@ def prepare_rewrite_config(
         rewrite_config: Configuración del usuario
         gsc_analysis: Análisis de GSC (opcional)
         html_to_rewrite: HTML del artículo a reescribir
+        posts_plps_links: Enlaces a posts/PLPs (NUEVO)
+        product_links: Enlaces a productos con JSON (NUEVO)
         
     Returns:
         Dict con toda la configuración necesaria para generar
@@ -1116,23 +1328,42 @@ def prepare_rewrite_config(
         'context': rewrite_config.get('context', ''),
     }
     
-    # HTML a reescribir (NUEVO)
+    # HTML a reescribir
     config['html_to_rewrite'] = html_to_rewrite if html_to_rewrite else None
     
-    # Enlaces - Ahora es una lista de múltiples enlaces
-    enlaces_list = rewrite_config.get('enlaces', [])
+    # NUEVO: Combinar todos los enlaces
+    all_links = []
     
-    # Convertir a formato compatible con prompts/rewrite.py
-    config['links'] = [
-        {
-            'url': enlace.get('url', ''),
-            'text': enlace.get('text', ''),
-            'anchor': enlace.get('text', ''),  # Alias para compatibilidad
-            'type': 'interno'
-        }
-        for enlace in enlaces_list
-        if enlace.get('url', '').strip()
-    ]
+    # Enlaces a posts/PLPs (sin JSON)
+    if posts_plps_links:
+        for link in posts_plps_links:
+            all_links.append({
+                'url': link.get('url', ''),
+                'anchor': link.get('anchor', ''),
+                'text': link.get('anchor', ''),  # Alias
+                'type': 'editorial'
+            })
+    
+    # Enlaces a productos (con JSON opcional)
+    if product_links:
+        for link in product_links:
+            link_dict = {
+                'url': link.get('url', ''),
+                'anchor': link.get('anchor', ''),
+                'text': link.get('anchor', ''),  # Alias
+                'type': 'product'
+            }
+            
+            # Añadir datos JSON si existen
+            if link.get('product_data'):
+                link_dict['product_data'] = link['product_data']
+            
+            all_links.append(link_dict)
+    
+    config['links'] = all_links
+    
+    # Mantener compatibilidad con código antiguo
+    config['enlaces'] = all_links  # Alias
     
     # Producto alternativo
     config['producto_alternativo'] = {
@@ -1193,7 +1424,12 @@ def render_rewrite_help() -> None:
         - **Manual**: Introduces las URLs que quieres analizar
         - Scrapea y analiza el contenido de cada competidor
         
-        **4. Generación Mejorada:**
+        **4. Enlaces Mejorados (Nuevo):**
+        - **Posts/PLPs**: Enlaces a contenido editorial (sin JSON)
+        - **Productos**: Enlaces a PDPs con datos estructurados (JSON opcional)
+        - Workflow n8n para obtener JSON de productos
+        
+        **5. Generación Mejorada:**
         - Crea contenido que cubre TODOS los gaps identificados
         - Profundiza más que la competencia
         - Aporta valor único de PcComponentes
@@ -1225,6 +1461,8 @@ __all__ = [
     'render_manual_competitors_input',
     'render_competitors_summary',
     'render_rewrite_configuration',
+    'render_posts_plps_links_section',  # NUEVO
+    'render_product_links_section',  # NUEVO
     'validate_rewrite_inputs',
     'render_generation_summary',
     'prepare_rewrite_config',
