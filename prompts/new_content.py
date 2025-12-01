@@ -1,9 +1,16 @@
 # -*- coding: utf-8 -*-
 """
 New Content Prompts - PcComponentes Content Generator
-Versión 4.9.0
+Versión 4.9.1
 
 Prompts para generación de contenido nuevo en 3 etapas.
+
+CAMBIOS v4.9.1:
+- FIX: Tablas con table-layout:fixed para alinear columnas correctamente
+- FIX: Más espaciado entre headings y cajas (margin-bottom en h2/h3)
+- FIX: Mayor padding interno en grid-item y product-module
+- FIX: Enlaces en fondos oscuros ahora son visibles (dorado en verdict-box, blanco en callout-bf)
+- Nueva variable CSS --space-xl:32px para espaciados mayores
 
 CAMBIOS v4.9.0:
 - Fusión de pdp_data (n8n) + pdp_json_data (JSON subido)
@@ -37,7 +44,7 @@ Autor: PcComponentes - Product Discovery & Content
 
 from typing import Dict, List, Optional, Any
 
-__version__ = "4.9.0"
+__version__ = "4.9.1"
 
 # Importar constantes de tono desde config.brand (existente)
 try:
@@ -54,11 +61,16 @@ except ImportError:
 
 
 # ============================================================================
-# CSS MINIFICADO
+# CSS MINIFICADO v4.9.1
+# Correcciones:
+# - Tablas: table-layout:fixed para alinear columnas correctamente
+# - Espaciado: más margen entre headings y cajas, padding interno aumentado
+# - Enlaces: color claro en fondos oscuros (verdict-box, callout-bf)
 # ============================================================================
 
-CSS_INLINE_MINIFIED = """:root{--orange-900:#FF6000;--blue-m-900:#170453;--white:#FFFFFF;--gray-100:#F5F5F5;--gray-200:#E5E5E5;--gray-700:#404040;--gray-900:#171717;--space-md:16px;--space-lg:24px;--radius-md:8px;}
+CSS_INLINE_MINIFIED = """:root{--orange-900:#FF6000;--blue-m-900:#170453;--white:#FFFFFF;--gray-100:#F5F5F5;--gray-200:#E5E5E5;--gray-700:#404040;--gray-900:#171717;--space-md:16px;--space-lg:24px;--space-xl:32px;--radius-md:8px;}
 .contentGenerator__main,.contentGenerator__faqs,.contentGenerator__verdict{font-family:'Inter',sans-serif;line-height:1.7;color:var(--gray-900);max-width:100%;}
+.contentGenerator__main h2,.contentGenerator__main h3{margin-bottom:var(--space-lg);}
 .kicker{display:inline-block;background:var(--orange-900);color:var(--white);padding:4px 12px;font-size:12px;font-weight:700;text-transform:uppercase;border-radius:4px;margin-bottom:16px;}
 .toc{background:var(--gray-100);border-radius:var(--radius-md);padding:var(--space-lg);margin:var(--space-lg) 0;}
 .toc__title{font-weight:700;margin-bottom:12px;}
@@ -66,17 +78,26 @@ CSS_INLINE_MINIFIED = """:root{--orange-900:#FF6000;--blue-m-900:#170453;--white
 .toc__list li{margin-bottom:8px;}
 .faqs__item{border-bottom:1px solid var(--gray-200);padding:var(--space-md) 0;}
 .faqs__question{font-weight:600;margin-bottom:8px;}
-.verdict-box{background:linear-gradient(135deg,var(--blue-m-900),#2E1A7A);color:var(--white);padding:var(--space-lg);border-radius:var(--radius-md);}
-.callout{background:var(--gray-100);border-left:4px solid var(--orange-900);padding:var(--space-md);margin:var(--space-lg) 0;border-radius:0 var(--radius-md) var(--radius-md) 0;}
-.callout-bf{background:linear-gradient(135deg,#FF6000,#FF8533);color:var(--white);padding:var(--space-lg);border-radius:var(--radius-md);text-align:center;}
-table{width:100%;border-collapse:collapse;margin:var(--space-lg) 0;}
-th,td{padding:12px;text-align:left;border-bottom:1px solid var(--gray-200);}
+.verdict-box{background:linear-gradient(135deg,var(--blue-m-900),#2E1A7A);color:var(--white);padding:var(--space-xl);border-radius:var(--radius-md);margin-top:var(--space-lg);}
+.verdict-box a{color:#FFD700;text-decoration:underline;}
+.verdict-box a:hover{color:var(--white);}
+.callout{background:var(--gray-100);border-left:4px solid var(--orange-900);padding:var(--space-md) var(--space-lg);margin:var(--space-lg) 0;border-radius:0 var(--radius-md) var(--radius-md) 0;}
+.callout-bf{background:linear-gradient(135deg,#FF6000,#FF8533);color:var(--white);padding:var(--space-xl);border-radius:var(--radius-md);text-align:center;margin:var(--space-lg) 0;}
+.callout-bf a{color:var(--white);text-decoration:underline;font-weight:600;}
+.callout-bf a:hover{color:#FFD700;}
+table{width:100%;border-collapse:collapse;margin:var(--space-lg) 0;table-layout:fixed;}
+th,td{padding:12px 16px;text-align:left;border-bottom:1px solid var(--gray-200);word-wrap:break-word;}
 th{background:var(--gray-100);font-weight:600;}
-.grid-layout{display:grid;grid-template-columns:repeat(auto-fit,minmax(280px,1fr));gap:var(--space-lg);}
-.grid-item{background:var(--white);border:1px solid var(--gray-200);border-radius:var(--radius-md);padding:var(--space-md);}
+th:first-child,td:first-child{width:30%;}
+.grid-layout{display:grid;grid-template-columns:repeat(auto-fit,minmax(280px,1fr));gap:var(--space-lg);margin-top:var(--space-lg);}
+.grid-item{background:var(--white);border:1px solid var(--gray-200);border-radius:var(--radius-md);padding:var(--space-lg) var(--space-xl);}
+.grid-item h4{margin-top:0;margin-bottom:var(--space-md);}
+.grid-item p{margin-bottom:var(--space-md);}
+.grid-item a{color:var(--orange-900);font-weight:600;}
 .card.destacado{border:2px solid var(--orange-900);position:relative;}
 .card.destacado::before{content:'DESTACADO';position:absolute;top:-10px;left:20px;background:var(--orange-900);color:var(--white);padding:2px 8px;font-size:11px;border-radius:4px;}
-.product-module{background:var(--gray-100);padding:var(--space-lg);border-radius:var(--radius-md);margin:var(--space-lg) 0;}
+.product-module{background:var(--gray-100);padding:var(--space-xl);border-radius:var(--radius-md);margin:var(--space-lg) 0;}
+.product-module h4{margin-top:0;}
 .price-tag{font-size:1.5em;font-weight:700;color:var(--orange-900);}"""
 
 
