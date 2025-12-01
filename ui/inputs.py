@@ -1,14 +1,14 @@
 # -*- coding: utf-8 -*-
 """
 UI Inputs - PcComponentes Content Generator
-Versión 4.5.1
+Versión 4.5.2
 
 Componentes de entrada para la interfaz Streamlit.
 Incluye: validación, anchor text, preguntas guía, producto alternativo,
 fecha GSC, análisis de canibalización, campo HTML para reescritura,
 integración con n8n para obtener datos de producto, CARGA DE JSON DE PRODUCTOS.
 
-CAMBIOS v4.5.1:
+CAMBIOS v4.5.2:
 - Añadido soporte para carga de JSON de productos (workflow n8n)
 - Widget JSON en producto principal
 - Widget JSON en cada enlace PDP
