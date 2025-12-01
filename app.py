@@ -1,17 +1,23 @@
 """
 PcComponentes Content Generator - App Principal
-Versión 4.5.0 CORREGIDA
+Versión 4.9.0
 
 Aplicación Streamlit para generación de contenido SEO.
 Flujo de 3 etapas: Borrador → Análisis → Final
 
-CORRECCIONES v4.5.0:
+CAMBIOS v4.9.0:
+- Nuevo parámetro pdp_json_data en build_new_content_prompt_stage1()
+- Integración completa de JSON de productos (principal, enlaces PDP, alternativo)
+- Los datos JSON ahora enriquecen los prompts con ventajas/desventajas/opiniones
+- Compatibilidad total con new_content.py v4.9.0
+
+CORRECCIONES PREVIAS v4.5.0:
 - Nombres de funciones correctos (build_new_content_prompt_stage1, etc.)
 - Parámetros correctos (secondary_keywords, guiding_context, links_data)
 - GenerationResult.content en lugar de asignar GenerationResult a str
 - Análisis competitivo inline (build_competitor_analysis_prompt no existe)
-- ✅ NUEVA: Validaciones de entrada en execute_generation_pipeline() (líneas 1009-1025)
-- ✅ NUEVA: Safe access a config['keyword'] en modo rewrite (línea 1181)
+- Validaciones de entrada en execute_generation_pipeline()
+- Safe access a config['keyword'] en modo rewrite
 
 Autor: PcComponentes - Product Discovery & Content
 """
@@ -37,7 +43,7 @@ logger = logging.getLogger(__name__)
 # VERSIÓN
 # ============================================================================
 
-__version__ = "4.5.0"
+__version__ = "4.9.0"
 APP_TITLE = "PcComponentes Content Generator"
 
 # ============================================================================
@@ -955,7 +961,7 @@ def execute_generation_pipeline(config: Dict[str, Any], mode: str = 'new') -> No
     """
     
     # ========================================================================
-    # ✅ CAMBIO 1: VALIDACIONES AÑADIDAS (LÍNEAS 1009-1025)
+    # VALIDACIONES DE ENTRADA
     # ========================================================================
     # Validar tipos
     if not isinstance(config, dict):
@@ -973,8 +979,21 @@ def execute_generation_pipeline(config: Dict[str, Any], mode: str = 'new') -> No
     missing = [k for k in required_keys if k not in config]
     if missing:
         raise ValueError(f"Config incompleto. Faltan keys: {missing}")
+    
     # ========================================================================
-    # FIN VALIDACIONES AÑADIDAS
+    # DEBUG: Verificar datos JSON (v4.9.0)
+    # ========================================================================
+    if DEBUG_MODE:
+        logger.info("=" * 60)
+        logger.info("DEBUG: Verificando datos JSON en config")
+        logger.info(f"  pdp_json_data: {'✅ Presente' if config.get('pdp_json_data') else '❌ Ausente'}")
+        links = config.get('links', config.get('internal_links', []))
+        links_with_data = sum(1 for l in links if l.get('product_data'))
+        logger.info(f"  links con product_data: {links_with_data}/{len(links)}")
+        alt = config.get('producto_alternativo', config.get('alternative_product', {}))
+        if alt:
+            logger.info(f"  alternative_product.json_data: {'✅ Presente' if alt.get('json_data') else '❌ Ausente'}")
+        logger.info("=" * 60)
     # ========================================================================
     
     if ContentGenerator is None:
@@ -1087,19 +1106,22 @@ Formato tu respuesta de manera clara y accionable."""
                         logger.warning(f"Arquetipo no encontrado: {config.get('arquetipo_codigo')}")
                         arquetipo = {'code': 'ARQ-1', 'name': 'Review', 'tone': 'experto'}
                     
-                    # CORRECCIÓN: Usar nombre correcto y parámetros correctos
+                    # ================================================================
+                    # CAMBIO v4.9.0: Añadido pdp_json_data
+                    # ================================================================
                     stage1_prompt = new_content.build_new_content_prompt_stage1(
-                        keyword=config.get('keyword', ''),  # REQUERIDO, posición 1
-                        arquetipo=arquetipo,  # REQUERIDO, posición 2
+                        keyword=config.get('keyword', ''),
+                        arquetipo=arquetipo,
                         target_length=config.get('target_length', 1500),
                         pdp_data=config.get('pdp_data'),
-                        links_data=config.get('links', config.get('internal_links', [])),  # links_data, NO links
-                        secondary_keywords=config.get('keywords', []),  # secondary_keywords, NO keywords
+                        pdp_json_data=config.get('pdp_json_data'),  # ✅ NUEVO v4.9.0
+                        links_data=config.get('links', config.get('internal_links', [])),
+                        secondary_keywords=config.get('keywords', []),
                         additional_instructions=config.get('objetivo', config.get('additional_instructions', '')),
-                        campos_especificos=config.get('campos_arquetipo', {}),  # campos_especificos, NO campos_arquetipo
-                        visual_elements=config.get('visual_elements', []),  # AÑADIDO: Elementos visuales
-                        guiding_context=config.get('context', config.get('guiding_context', '')),  # guiding_context
-                        alternative_product=config.get('producto_alternativo', config.get('alternative_product'))  # alternative_product
+                        campos_especificos=config.get('campos_arquetipo', {}),
+                        visual_elements=config.get('visual_elements', []),
+                        guiding_context=config.get('context', config.get('guiding_context', '')),
+                        alternative_product=config.get('producto_alternativo', config.get('alternative_product'))
                     )
                 else:  # mode == 'rewrite'
                     # Obtener arquetipo si está configurado
@@ -1121,28 +1143,20 @@ CONTENIDO ACTUAL A MEJORAR/REESCRIBIR:
 Usa este contenido como base, mejóralo y amplíalo según el análisis competitivo.
 """
                     
-                    # ============================================================
-                    # ✅ CAMBIO 2: SAFE ACCESS A CONFIG (LÍNEA 1181)
-                    # ============================================================
-                    # ANTES: keyword=config['keyword'],  ❌ Puede causar KeyError
-                    # AHORA: keyword=config.get('keyword', ''),  ✅ Safe access
-                    # ============================================================
-                    # CORRECCIÓN: Usar nombre correcto (build_rewrite_prompt_stage1, NO _draft)
                     stage1_prompt = rewrite.build_rewrite_prompt_stage1(
                         keyword=config.get('keyword', ''),
                         competitor_analysis=st.session_state.get('rewrite_analysis', ''),
                         pdp_data=config.get('pdp_data'),
                         target_length=config.get('target_length', 1500),
-                        keywords=config.get('keywords', [config.get('keyword', '')]),  # Aquí SÍ es keywords
-                        context=context_with_html,  # Aquí SÍ es context
-                        links=config.get('links', {}),  # Aquí SÍ es links
+                        keywords=config.get('keywords', [config.get('keyword', '')]),
+                        context=context_with_html,
+                        links=config.get('links', {}),
                         objetivo=config.get('objetivo', ''),
                         producto_alternativo=config.get('producto_alternativo', {}),
                         arquetipo=arquetipo
                     )
                 
                 # Generar borrador
-                # CORRECCIÓN: generator.generate() retorna GenerationResult
                 result = generator.generate(stage1_prompt)
                 
                 if not result.success:
@@ -1177,7 +1191,6 @@ Usa este contenido como base, mejóralo y amplíalo según el análisis competit
             with st.spinner("Claude está analizando el borrador..."):
                 # Construir prompt de análisis según modo
                 if mode == 'new':
-                    # CORRECCIÓN: Usar parámetros correctos
                     stage2_prompt = new_content.build_correction_prompt_stage2(
                         draft_content=st.session_state.draft_html,
                         target_length=config.get('target_length', 1500),
@@ -1195,7 +1208,6 @@ Usa este contenido como base, mejóralo y amplíalo según el análisis competit
                     )
                 
                 # Generar análisis
-                # CORRECCIÓN: generator.generate() retorna GenerationResult
                 result = generator.generate(stage2_prompt)
                 
                 if not result.success:
@@ -1218,14 +1230,16 @@ Usa este contenido como base, mejóralo y amplíalo según el análisis competit
             with st.spinner("Claude está generando la versión final..."):
                 # Construir prompt final según modo
                 if mode == 'new':
-                    # CORRECCIÓN: Usar nombre correcto (build_final_prompt_stage3, NO build_final_generation_prompt_stage3)
+                    # ================================================================
+                    # CAMBIO v4.9.0: Añadidos links_data y alternative_product
+                    # ================================================================
                     stage3_prompt = new_content.build_final_prompt_stage3(
                         draft_content=st.session_state.draft_html,
                         analysis_feedback=st.session_state.analysis_json,
                         keyword=config.get('keyword', ''),
                         target_length=config.get('target_length', 1500),
-                        links_data=config.get('links', config.get('internal_links', [])),
-                        alternative_product=config.get('producto_alternativo', config.get('alternative_product'))
+                        links_data=config.get('links', config.get('internal_links', [])),  # ✅ v4.9.0
+                        alternative_product=config.get('producto_alternativo', config.get('alternative_product'))  # ✅ v4.9.0
                     )
                 else:  # mode == 'rewrite'
                     stage3_prompt = rewrite.build_rewrite_final_prompt_stage3(
@@ -1236,7 +1250,6 @@ Usa este contenido como base, mejóralo y amplíalo según el análisis competit
                     )
                 
                 # Generar versión final
-                # CORRECCIÓN: generator.generate() retorna GenerationResult
                 result = generator.generate(stage3_prompt)
                 
                 if not result.success:
@@ -1294,7 +1307,7 @@ def save_generation_to_state(config: Dict[str, Any], mode: str) -> None:
         'keyword': config.get('keyword', ''),
         'target_length': config.get('target_length', 1500),
         'arquetipo': config.get('arquetipo_codigo', ''),
-        'config': {k: v for k, v in config.items() if k not in ['html_to_rewrite', 'competitors_data', 'pdp_data']},
+        'config': {k: v for k, v in config.items() if k not in ['html_to_rewrite', 'competitors_data', 'pdp_data', 'pdp_json_data']},
     }
 
 
