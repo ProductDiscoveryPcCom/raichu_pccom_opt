@@ -83,9 +83,9 @@ except ImportError as e:
     MIN_CONTENT_LENGTH = 500
     MAX_CONTENT_LENGTH = 5000
 
-# Importar archetipos
+# Importar arquetipos
 try:
-    from .archetipos import (
+    from .arquetipos import (
         ARQUETIPOS,
         get_arquetipo,
         list_arquetipos,
@@ -95,10 +95,10 @@ try:
         validate_arquetipo_code,
         get_all_codes,
     )
-    _archetipos_available = True
+    _arquetipos_available = True
 except ImportError as e:
-    logger.warning(f"No se pudo importar archetipos: {e}")
-    _archetipos_available = False
+    logger.warning(f"No se pudo importar arquetipos: {e}")
+    _arquetipos_available = False
     
     # Fallbacks
     ARQUETIPOS = {}
@@ -112,7 +112,7 @@ except ImportError as e:
 
 # También intentar importar archetypes (alias en inglés) por compatibilidad
 try:
-    from .archetipos import ARQUETIPOS as ARCHETYPES
+    from .arquetipos import ARQUETIPOS as ARCHETYPES
 except ImportError:
     ARCHETYPES = ARQUETIPOS
 
