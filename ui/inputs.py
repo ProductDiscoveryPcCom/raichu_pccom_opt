@@ -680,7 +680,7 @@ def render_length_slider(
 
 
 def render_arquetipo_selector(key: str = "arquetipo_selector") -> str:
-    """Renderiza selector de arquetipo."""
+    """Renderiza selector de arquetipo con descripción del tipo de contenido."""
     saved_value = get_form_value('arquetipo', 'ARQ-1')
     names = get_arquetipo_names()
     options = list(names.keys())
@@ -697,6 +697,15 @@ def render_arquetipo_selector(key: str = "arquetipo_selector") -> str:
         index=default_index,
         key=key
     )
+    
+    # Mostrar descripción del arquetipo seleccionado
+    if arquetipo:
+        arq_data = get_arquetipo(arquetipo)
+        if arq_data:
+            description = arq_data.get('description', '')
+            if description:
+                st.caption(f"ℹ️ {description}")
+    
     save_form_data({'arquetipo': arquetipo})
     return arquetipo
 
