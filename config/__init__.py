@@ -88,12 +88,11 @@ try:
     from .arquetipos import (
         ARQUETIPOS,
         get_arquetipo,
-        list_arquetipos,
         get_arquetipo_names,
         get_arquetipo_by_name,
         get_default_length,
         validate_arquetipo_code,
-        get_all_codes,
+        get_all_arquetipo_codes,  # ✅ nombre correcto
     )
     _arquetipos_available = True
 except ImportError as e:
