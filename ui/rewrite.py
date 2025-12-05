@@ -1,10 +1,17 @@
 # -*- coding: utf-8 -*-
 """
 UI de Reescritura - PcComponentes Content Generator
-Versión 4.7.0
+Versión 4.7.1
 
 Este módulo maneja la interfaz de usuario para el modo REESCRITURA,
 que analiza contenido competidor y genera una versión mejorada.
+
+CAMBIOS v4.7.1:
+- Productos Alternativos: checkbox opcional + N productos con JSON cada uno (nuevo paso 8)
+- Enlaces Posts/PLPs: selector tipo (Post/PLP) + campos HTML específicos
+  - PLP: Top text + Bottom text (dos campos)
+  - Post: Un campo HTML único
+- Eliminado JSON de productos en enlaces editoriales (no necesario)
 
 CAMBIOS v4.7.0:
 - NUEVO: Paso 2 ahora es HTML a Reescribir (antes era Producto Principal)
@@ -22,8 +29,9 @@ Flujo actualizado:
 4. Producto Principal (opcional con JSON)
 5. Obtención de competidores (SEMrush API o manual)
 6. Configuración de parámetros (con arquetipo completo)
-7. Enlaces a posts/PLPs y productos (con JSON opcional)
-8. Generación del contenido mejorado
+7. Enlaces a posts/PLPs (con HTML contextual) y productos (con JSON)
+8. Productos Alternativos (opcional con JSON cada uno) - NUEVO v4.7.1
+9. Generación del contenido mejorado
 
 Autor: PcComponentes - Product Discovery & Content
 """
@@ -108,12 +116,15 @@ except ImportError:
 # VERSIÓN Y CONSTANTES
 # ============================================================================
 
-__version__ = "4.7.0"
+__version__ = "4.7.1"
 
 MAX_COMPETITORS = 10
 DEFAULT_REWRITE_LENGTH = 1600
 COMPETITION_BEAT_FACTOR = 1.2
 MAX_ARTICLES_TO_MERGE = 5
+MAX_ALTERNATIVE_PRODUCTS = 10  # NUEVO v4.7.1
+MAX_EDITORIAL_LINKS = 10  # NUEVO v4.7.1
+MAX_PRODUCT_LINKS = 10  # NUEVO v4.7.1
 
 
 # ============================================================================
@@ -147,6 +158,40 @@ REWRITE_MODE_OPTIONS = {
 
 
 # ============================================================================
+# TIPOS DE CONTENIDO EDITORIAL (NUEVO v4.7.1)
+# ============================================================================
+
+class EditorialType:
+    """Tipos de contenido editorial para enlaces."""
+    POST = "post"
+    PLP = "plp"
+
+
+EDITORIAL_TYPE_OPTIONS = {
+    EditorialType.POST: {
+        "name": "📝 Post / Guía / Blog",
+        "description": "Contenido editorial con un único bloque HTML",
+        "placeholder": """<article>
+  <h1>Título del post...</h1>
+  <p>Contenido del post que servirá de contexto para enlazar...</p>
+</article>"""
+    },
+    EditorialType.PLP: {
+        "name": "🛒 PLP / Categoría",
+        "description": "Página de listado con Top text y Bottom text",
+        "placeholder_top": """<div class="category-top">
+  <h1>Portátiles Gaming</h1>
+  <p>Descubre nuestra selección de portátiles gaming...</p>
+</div>""",
+        "placeholder_bottom": """<div class="category-bottom">
+  <h2>¿Cómo elegir tu portátil gaming?</h2>
+  <p>A la hora de elegir un portátil gaming...</p>
+</div>"""
+    }
+}
+
+
+# ============================================================================
 # FUNCIÓN PRINCIPAL DE RENDERIZADO
 # ============================================================================
 
@@ -162,7 +207,8 @@ def render_rewrite_section() -> Tuple[bool, Dict]:
     - Producto Principal
     - Obtención de competidores (SEMrush o manual)
     - Configuración de parámetros de generación (con todos los arquetipos)
-    - Enlaces a posts/PLPs y productos con JSON
+    - Enlaces a posts/PLPs (con HTML contextual) y productos (con JSON)
+    - Productos Alternativos (con JSON cada uno)
     
     Returns:
         Tuple[bool, Dict]: (debe_generar, config_dict)
@@ -199,6 +245,9 @@ def render_rewrite_section() -> Tuple[bool, Dict]:
     
     # Inicializar estado si no existe
     _initialize_rewrite_state()
+    
+    # Procesar eliminaciones pendientes ANTES de renderizar widgets
+    _process_pending_deletions()
     
     # =========================================================================
     # PASO 1: Keyword y verificación GSC
@@ -287,20 +336,28 @@ def render_rewrite_section() -> Tuple[bool, Dict]:
     rewrite_config = render_rewrite_configuration(keyword, rewrite_mode)
     
     # =========================================================================
-    # PASO 7: Enlaces a Incluir
+    # PASO 7: Enlaces a Incluir (ACTUALIZADO v4.7.1)
     # =========================================================================
     st.markdown("---")
     st.markdown("### 🔗 Paso 7: Enlaces a Incluir")
     
-    # Sección 1: Posts/PLPs (con JSON)
+    # Sección 1: Posts/PLPs con HTML contextual (ACTUALIZADO v4.7.1)
     with st.expander("📝 Enlaces a Posts / PLPs (Contenido Editorial)", expanded=True):
-        st.info(f"💡 **Enlaces a contenido editorial**: Posts, guías, categorías, PLPs, etc. [Workflow n8n]({N8N_PRODUCT_JSON_WORKFLOW})")
+        st.info("💡 **Enlaces a contenido editorial**: Añade el HTML del contenido destino para que los enlaces sean más contextuales y naturales.")
         posts_plps_links = render_posts_plps_links_section()
     
     # Sección 2: Productos con JSON
     with st.expander("🛒 Enlaces a Productos (con datos estructurados)", expanded=True):
         st.info(f"💡 **Enlaces a productos**: PDPs con opción de cargar JSON. [Workflow n8n]({N8N_PRODUCT_JSON_WORKFLOW})")
         product_links = render_product_links_section()
+    
+    # =========================================================================
+    # PASO 8: Productos Alternativos (NUEVO v4.7.1)
+    # =========================================================================
+    st.markdown("---")
+    st.markdown("### 🎯 Paso 8: Productos Alternativos (Opcional)")
+    
+    alternative_products = render_alternative_products_section()
     
     # =========================================================================
     # VALIDAR Y PREPARAR
@@ -325,7 +382,8 @@ def render_rewrite_section() -> Tuple[bool, Dict]:
     # Mostrar resumen antes de generar
     render_generation_summary(
         keyword, rewrite_config, gsc_analysis, html_contents, 
-        main_product_data, rewrite_mode, rewrite_instructions
+        main_product_data, rewrite_mode, rewrite_instructions,
+        alternative_products, posts_plps_links
     )
     
     # Preparar configuración completa (el botón está en app.py)
@@ -340,7 +398,8 @@ def render_rewrite_section() -> Tuple[bool, Dict]:
         disambiguation_config=disambiguation_config,
         main_product_data=main_product_data,
         posts_plps_links=posts_plps_links,
-        product_links=product_links
+        product_links=product_links,
+        alternative_products=alternative_products
     )
     
     return True, full_config
@@ -383,6 +442,11 @@ def _initialize_rewrite_state() -> None:
         st.session_state.rewrite_main_product_enabled = False
     if 'rewrite_main_product_json' not in st.session_state:
         st.session_state.rewrite_main_product_json = None
+    # Estado para productos alternativos (NUEVO v4.7.1)
+    if 'rewrite_alt_products_enabled' not in st.session_state:
+        st.session_state.rewrite_alt_products_enabled = False
+    if 'rewrite_alt_products_count' not in st.session_state:
+        st.session_state.rewrite_alt_products_count = 1
 
 
 # ============================================================================
@@ -1111,7 +1175,9 @@ def render_main_product_section() -> Optional[Dict[str, Any]]:
                         st.error("❌ Error al parsear el JSON del producto")
                         st.session_state.rewrite_main_product_json = None
                 else:
-                    st.error(f"❌ JSON inválido: {error_msg}")
+                    # Quitar prefijo "JSON inválido:" si ya viene en el mensaje
+                    clean_error = error_msg.replace("JSON inválido: ", "").replace("JSON inválido:", "")
+                    st.error(f"❌ JSON inválido: {clean_error}")
                     st.session_state.rewrite_main_product_json = None
             else:
                 # Fallback sin validación
@@ -1142,6 +1208,128 @@ def render_main_product_section() -> Optional[Dict[str, Any]]:
         }
     
     return None
+
+
+# ============================================================================
+# SECCIÓN: PRODUCTOS ALTERNATIVOS (NUEVO v4.7.1)
+# ============================================================================
+
+def render_alternative_products_section() -> List[Dict[str, Any]]:
+    """
+    Renderiza la sección de productos alternativos.
+    Cada producto tiene URL + JSON con tabs (subir/pegar).
+    
+    Returns:
+        Lista de dicts con {url, anchor, product_data}
+    """
+    
+    st.markdown("""
+    Si quieres recomendar productos alternativos en el contenido, 
+    añádelos aquí con sus datos para que los enlaces sean más contextuales.
+    """)
+    
+    # Checkbox para habilitar
+    is_enabled = st.checkbox(
+        "Incluir productos alternativos",
+        value=st.session_state.get('rewrite_alt_products_enabled', False),
+        key="rewrite_alt_products_checkbox",
+        help="Activa esta opción si quieres recomendar alternativas"
+    )
+    
+    st.session_state.rewrite_alt_products_enabled = is_enabled
+    
+    if not is_enabled:
+        st.caption("💡 Activa esta opción si quieres recomendar alternativas al producto principal o a los productos mencionados.")
+        return []
+    
+    st.markdown(f"""
+    💡 **Obtén el JSON de cada producto** usando el workflow de n8n:
+    [🔗 Abrir Workflow de n8n]({N8N_PRODUCT_JSON_WORKFLOW})
+    """)
+    
+    count_key = 'rewrite_alt_products_count'
+    current_count = st.session_state.get(count_key, 1)
+    
+    alternative_products = []
+    
+    for i in range(current_count):
+        with st.expander(f"🎯 Producto Alternativo {i+1}", expanded=(i == 0)):
+            col1, col2 = st.columns([3, 2])
+            
+            with col1:
+                url = st.text_input(
+                    f"URL del producto {i+1}",
+                    key=f"alt_prod_url_{i}",
+                    placeholder="https://www.pccomponentes.com/producto",
+                    help="URL del producto alternativo"
+                )
+            
+            with col2:
+                anchor = st.text_input(
+                    f"Texto del enlace {i+1}",
+                    key=f"alt_prod_anchor_{i}",
+                    placeholder="Nombre del producto",
+                    help="Texto que se usará para enlazar"
+                )
+            
+            # Widget JSON con TABS
+            st.markdown("**📦 JSON del producto**")
+            
+            json_tab1, json_tab2 = st.tabs(["📁 Subir JSON", "📋 Pegar JSON"])
+            
+            json_content = None
+            json_key = f"alt_prod_json_{i}"
+            
+            with json_tab1:
+                uploaded_json = st.file_uploader(
+                    f"Subir JSON",
+                    type=['json'],
+                    key=f"alt_prod_json_upload_{i}",
+                    help="JSON del producto"
+                )
+                
+                if uploaded_json is not None:
+                    try:
+                        json_content = uploaded_json.read().decode('utf-8')
+                    except Exception as e:
+                        st.error(f"❌ Error: {str(e)}")
+            
+            with json_tab2:
+                pasted_json = st.text_area(
+                    "Pegar JSON",
+                    height=100,
+                    key=f"alt_prod_json_paste_{i}",
+                    placeholder='{"id": "...", "name": "...", ...}'
+                )
+                
+                if pasted_json and pasted_json.strip():
+                    json_content = pasted_json.strip()
+            
+            product_json_data = _process_json_content(json_content, json_key)
+            
+            # Botón eliminar
+            if current_count > 1:
+                if st.button("🗑️ Eliminar producto", key=f"alt_prod_del_{i}"):
+                    _delete_link_at_index(i, current_count, count_key, 'alt_prod')
+            
+            if url and url.strip():
+                alternative_products.append({
+                    'url': url.strip(),
+                    'anchor': anchor.strip() if anchor else '',
+                    'product_data': product_json_data
+                })
+    
+    # Botón añadir
+    if current_count < MAX_ALTERNATIVE_PRODUCTS:
+        if st.button("➕ Añadir otro producto alternativo", key="alt_prod_add"):
+            st.session_state[count_key] = current_count + 1
+            st.rerun()
+    
+    if alternative_products:
+        with_json = sum(1 for p in alternative_products if p.get('product_data'))
+        st.success(f"✅ {len(alternative_products)} producto(s) alternativo(s) ({with_json} con JSON)")
+    
+    return alternative_products
 
 
 # ============================================================================
@@ -1178,15 +1366,21 @@ def _show_html_stats(html_content: str) -> None:
 
 
 # ============================================================================
-# SECCIÓN: ENLACES A POSTS/PLPs CON JSON
+# SECCIÓN: ENLACES A POSTS/PLPs CON HTML CONTEXTUAL (ACTUALIZADO v4.7.1)
 # ============================================================================
 
 def render_posts_plps_links_section() -> List[Dict[str, Any]]:
     """
-    Renderiza la sección de enlaces a posts/PLPs con JSON opcional.
+    Renderiza la sección de enlaces a posts/PLPs con HTML contextual.
+    
+    ACTUALIZADO v4.7.1:
+    - Selector tipo: Post / PLP
+    - Post: Un campo HTML único
+    - PLP: Dos campos (Top text, Bottom text)
+    - Eliminado JSON de productos (no necesario aquí)
     
     Returns:
-        Lista de dicts con {'url': str, 'anchor': str, 'product_data': dict|None}
+        Lista de dicts con datos del enlace + HTML contextual
     """
     count_key = 'rewrite_posts_plps_count'
     current_count = st.session_state.get(count_key, 1)
@@ -1194,7 +1388,17 @@ def render_posts_plps_links_section() -> List[Dict[str, Any]]:
     links = []
     
     for i in range(current_count):
-        with st.expander(f"📝 Enlace {i+1}", expanded=(i == 0)):
+        with st.expander(f"📝 Enlace Editorial {i+1}", expanded=(i == 0)):
+            # Selector de tipo (NUEVO v4.7.1)
+            editorial_type = st.radio(
+                f"Tipo de contenido destino {i+1}",
+                options=[EditorialType.POST, EditorialType.PLP],
+                format_func=lambda x: EDITORIAL_TYPE_OPTIONS[x]["name"],
+                horizontal=True,
+                key=f"rewrite_editorial_type_{i}",
+                help="Selecciona el tipo de contenido al que enlazas"
+            )
+            
             col1, col2 = st.columns([3, 2])
             
             with col1:
@@ -1207,48 +1411,63 @@ def render_posts_plps_links_section() -> List[Dict[str, Any]]:
             
             with col2:
                 anchor = st.text_input(
-                    f"Anchor {i+1}",
+                    f"Anchor text {i+1}",
                     key=f"rewrite_posts_anchor_{i}",
                     placeholder="Texto del enlace",
                     help="Texto visible del enlace"
                 )
             
-            # Widget JSON opcional
-            json_key = f"rewrite_posts_json_{i}"
+            # Campos HTML según tipo (NUEVO v4.7.1)
+            html_content_data = {}
             
-            with st.expander(f"📦 JSON de producto (opcional)", expanded=False):
-                st.caption("Si este enlace es a un producto, puedes añadir su JSON")
+            if editorial_type == EditorialType.POST:
+                # Un solo campo HTML para posts
+                st.markdown("**📄 Contenido HTML del Post** (para contexto)")
+                html_content = st.text_area(
+                    "HTML del post",
+                    height=150,
+                    key=f"rewrite_posts_html_{i}",
+                    placeholder=EDITORIAL_TYPE_OPTIONS[EditorialType.POST]["placeholder"],
+                    help="Pega el HTML del post para que el enlace sea más contextual",
+                    label_visibility="collapsed"
+                )
                 
-                json_tab1, json_tab2 = st.tabs(["📁 Subir", "📋 Pegar"])
+                html_content_data['html_content'] = html_content
+                html_content_data['editorial_type'] = EditorialType.POST
                 
-                json_content = None
-                
-                with json_tab1:
-                    uploaded_json = st.file_uploader(
-                        f"Subir JSON",
-                        type=['json'],
-                        key=f"rewrite_posts_json_upload_{i}",
-                        help="JSON con datos del producto"
-                    )
-                    
-                    if uploaded_json is not None:
-                        try:
-                            json_content = uploaded_json.read().decode('utf-8')
-                        except Exception as e:
-                            st.error(f"❌ Error: {str(e)}")
-                
-                with json_tab2:
-                    pasted_json = st.text_area(
-                        "Pegar JSON",
-                        height=100,
-                        key=f"rewrite_posts_json_paste_{i}",
-                        placeholder='{"id": "...", ...}'
-                    )
-                    
-                    if pasted_json and pasted_json.strip():
-                        json_content = pasted_json.strip()
+                if html_content and html_content.strip():
+                    word_count = len(_strip_html_tags(html_content).split())
+                    st.caption(f"📊 {word_count} palabras de contexto")
             
-            product_json_data = _process_json_content(json_content, json_key)
+            else:  # PLP
+                # Dos campos para PLPs
+                st.markdown("**📄 Contenido de la PLP** (para contexto)")
+                
+                top_text = st.text_area(
+                    "Top text (antes de productos)",
+                    height=100,
+                    key=f"rewrite_posts_top_{i}",
+                    placeholder=EDITORIAL_TYPE_OPTIONS[EditorialType.PLP]["placeholder_top"],
+                    help="Texto que aparece ANTES del listado de productos"
+                )
+                
+                bottom_text = st.text_area(
+                    "Bottom text (después de productos)",
+                    height=100,
+                    key=f"rewrite_posts_bottom_{i}",
+                    placeholder=EDITORIAL_TYPE_OPTIONS[EditorialType.PLP]["placeholder_bottom"],
+                    help="Texto que aparece DESPUÉS del listado de productos"
+                )
+                
+                html_content_data['top_text'] = top_text
+                html_content_data['bottom_text'] = bottom_text
+                html_content_data['editorial_type'] = EditorialType.PLP
+                
+                # Estadísticas combinadas
+                total_content = (top_text or '') + ' ' + (bottom_text or '')
+                if total_content.strip():
+                    word_count = len(_strip_html_tags(total_content).split())
+                    st.caption(f"📊 {word_count} palabras de contexto (top + bottom)")
             
             # Botón eliminar
             if current_count > 1:
@@ -1256,22 +1475,33 @@ def render_posts_plps_links_section() -> List[Dict[str, Any]]:
                     _delete_link_at_index(i, current_count, count_key, 'rewrite_posts')
             
             if url and url.strip():
-                links.append({
+                link_data = {
                     'url': url.strip(),
                     'anchor': anchor.strip() if anchor else '',
                     'type': 'editorial',
-                    'product_data': product_json_data
-                })
+                    'editorial_type': html_content_data.get('editorial_type', EditorialType.POST),
+                }
+                
+                # Añadir campos HTML según tipo
+                if html_content_data.get('editorial_type') == EditorialType.POST:
+                    link_data['html_content'] = html_content_data.get('html_content', '')
+                else:
+                    link_data['top_text'] = html_content_data.get('top_text', '')
+                    link_data['bottom_text'] = html_content_data.get('bottom_text', '')
+                
+                links.append(link_data)
     
     # Botón añadir
-    if current_count < 10:
+    if current_count < MAX_EDITORIAL_LINKS:
         if st.button("➕ Añadir enlace a post/PLP", key="rewrite_posts_add"):
             st.session_state[count_key] = current_count + 1
             st.rerun()
     
     if links:
-        with_json = sum(1 for l in links if l.get('product_data'))
-        st.caption(f"✅ {len(links)} enlace(s) configurado(s) ({with_json} con JSON)")
+        posts = sum(1 for l in links if l.get('editorial_type') == EditorialType.POST)
+        plps = sum(1 for l in links if l.get('editorial_type') == EditorialType.PLP)
+        with_context = sum(1 for l in links if l.get('html_content') or l.get('top_text') or l.get('bottom_text'))
+        st.caption(f"✅ {len(links)} enlace(s): {posts} posts, {plps} PLPs ({with_context} con contexto HTML)")
     
     return links
 
@@ -1362,7 +1592,7 @@ def render_product_links_section() -> List[Dict[str, Any]]:
                 })
     
     # Botón añadir
-    if current_count < 10:
+    if current_count < MAX_PRODUCT_LINKS:
         if st.button("➕ Añadir producto", key="rewrite_prod_add"):
             st.session_state[count_key] = current_count + 1
             st.rerun()
@@ -1415,7 +1645,9 @@ def _process_json_content(json_content: Optional[str], json_key: str) -> Optiona
                 else:
                     st.error("❌ Error al parsear JSON")
             else:
-                st.error(f"❌ {error_msg}")
+                # Quitar prefijo duplicado si existe
+                clean_error = error_msg.replace("JSON inválido: ", "").replace("JSON inválido:", "")
+                st.error(f"❌ JSON inválido: {clean_error}")
         else:
             parsed_json = json.loads(json_content)
             st.session_state[json_key] = parsed_json
@@ -1429,19 +1661,75 @@ def _process_json_content(json_content: Optional[str], json_key: str) -> Optiona
 
 
 def _delete_link_at_index(idx: int, current_count: int, count_key: str, prefix: str) -> None:
-    """Elimina un enlace y hace shift de los siguientes."""
-    for j in range(idx, current_count - 1):
-        for field in ['url', 'anchor', 'json']:
-            next_val = st.session_state.get(f"{prefix}_{field}_{j+1}", "")
-            st.session_state[f"{prefix}_{field}_{j}"] = next_val
-    
-    last_idx = current_count - 1
-    for field in ['url', 'anchor', 'json']:
-        if f"{prefix}_{field}_{last_idx}" in st.session_state:
-            del st.session_state[f"{prefix}_{field}_{last_idx}"]
-    
-    st.session_state[count_key] = max(1, current_count - 1)
+    """
+    Marca un enlace para eliminación.
+    La eliminación real se procesa con _process_pending_deletions al inicio.
+    """
+    # Guardar la operación pendiente para procesarla en el siguiente rerun
+    st.session_state[f"_pending_delete_{prefix}"] = {
+        'idx': idx,
+        'count': current_count,
+        'count_key': count_key,
+        'prefix': prefix
+    }
     st.rerun()
+
+
+def _process_pending_deletions() -> None:
+    """
+    Procesa eliminaciones pendientes al inicio del renderizado.
+    Debe llamarse ANTES de renderizar los widgets de enlaces.
+    """
+    prefixes_to_check = ['rewrite_posts', 'rewrite_prod', 'alt_prod']
+    
+    for prefix in prefixes_to_check:
+        pending_key = f"_pending_delete_{prefix}"
+        
+        if pending_key in st.session_state:
+            pending = st.session_state[pending_key]
+            del st.session_state[pending_key]
+            
+            idx = pending['idx']
+            current_count = pending['count']
+            count_key = pending['count_key']
+            
+            # Determinar campos según prefijo
+            if prefix == 'rewrite_posts':
+                fields = ['url', 'anchor', 'html', 'top', 'bottom']
+            elif prefix == 'alt_prod':
+                fields = ['url', 'anchor', 'json']
+            else:
+                fields = ['url', 'anchor', 'json']
+            
+            # Shift de valores hacia arriba
+            for j in range(idx, current_count - 1):
+                for field in fields:
+                    next_key = f"{prefix}_{field}_{j+1}"
+                    curr_key = f"{prefix}_{field}_{j}"
+                    next_val = st.session_state.get(next_key, "")
+                    st.session_state[curr_key] = next_val
+            
+            # Limpiar última posición
+            last_idx = current_count - 1
+            for field in fields:
+                key_to_delete = f"{prefix}_{field}_{last_idx}"
+                if key_to_delete in st.session_state:
+                    del st.session_state[key_to_delete]
+            
+            # También limpiar keys relacionadas con editorial_type y uploads
+            extra_keys = [
+                f"rewrite_editorial_type_{last_idx}",
+                f"{prefix}_json_upload_{last_idx}",
+                f"{prefix}_json_paste_{last_idx}",
+                f"alt_prod_json_upload_{last_idx}",
+                f"alt_prod_json_paste_{last_idx}",
+            ]
+            for key in extra_keys:
+                if key in st.session_state:
+                    del st.session_state[key]
+            
+            # Decrementar contador
+            st.session_state[count_key] = max(1, current_count - 1)
 
 
 # ============================================================================
@@ -1904,7 +2192,7 @@ def validate_rewrite_inputs(
 
 
 # ============================================================================
-# RESUMEN ANTES DE GENERAR
+# RESUMEN ANTES DE GENERAR (ACTUALIZADO v4.7.1)
 # ============================================================================
 
 def render_generation_summary(
@@ -1914,7 +2202,9 @@ def render_generation_summary(
     html_contents: List[Dict],
     main_product_data: Optional[Dict],
     rewrite_mode: str,
-    rewrite_instructions: Dict
+    rewrite_instructions: Dict,
+    alternative_products: List[Dict] = None,
+    posts_plps_links: List[Dict] = None
 ) -> None:
     """Muestra un resumen de la configuración antes de generar."""
     
@@ -1943,7 +2233,12 @@ def render_generation_summary(
             
             if main_product_data and main_product_data.get('json_data'):
                 title = main_product_data['json_data'].get('title', 'Producto')
-                st.markdown(f"- 📦 Producto: `{title[:30]}...`")
+                st.markdown(f"- 📦 Producto principal: `{title[:30]}...`")
+            
+            # Productos alternativos (NUEVO v4.7.1)
+            if alternative_products:
+                with_json = sum(1 for p in alternative_products if p.get('product_data'))
+                st.markdown(f"- 🎯 Productos alternativos: `{len(alternative_products)}` ({with_json} con JSON)")
         
         with col2:
             st.markdown("**Instrucciones de reescritura:**")
@@ -1963,6 +2258,11 @@ def render_generation_summary(
             if st.session_state.rewrite_competitors_data:
                 scraped = [c for c in st.session_state.rewrite_competitors_data if c.get('scrape_success')]
                 st.markdown(f"- 🏆 Competidores: `{len(scraped)}`")
+            
+            # Enlaces editoriales (NUEVO v4.7.1)
+            if posts_plps_links:
+                with_context = sum(1 for l in posts_plps_links if l.get('html_content') or l.get('top_text'))
+                st.markdown(f"- 📝 Enlaces editoriales: `{len(posts_plps_links)}` ({with_context} con contexto)")
     
     st.info("""
     ✅ Todo listo para generar. El proceso incluirá:
@@ -1974,7 +2274,7 @@ def render_generation_summary(
 
 
 # ============================================================================
-# PREPARACIÓN DE CONFIGURACIÓN FINAL
+# PREPARACIÓN DE CONFIGURACIÓN FINAL (ACTUALIZADO v4.7.1)
 # ============================================================================
 
 def prepare_rewrite_config(
@@ -1988,7 +2288,8 @@ def prepare_rewrite_config(
     disambiguation_config: Optional[Dict],
     main_product_data: Optional[Dict],
     posts_plps_links: List[Dict],
-    product_links: List[Dict]
+    product_links: List[Dict],
+    alternative_products: List[Dict] = None
 ) -> Dict:
     """Prepara la configuración completa para el proceso de generación."""
     
@@ -2058,9 +2359,14 @@ def prepare_rewrite_config(
         config['pdp_json_data'] = None
     
     # =========================================================================
-    # ENLACES
+    # PRODUCTOS ALTERNATIVOS (NUEVO v4.7.1)
     # =========================================================================
-    all_links = []
+    config['alternative_products'] = alternative_products or []
+    
+    # =========================================================================
+    # ENLACES EDITORIALES (ACTUALIZADO v4.7.1)
+    # =========================================================================
+    config['editorial_links'] = []
     
     if posts_plps_links:
         for link in posts_plps_links:
@@ -2068,11 +2374,23 @@ def prepare_rewrite_config(
                 'url': link.get('url', ''),
                 'anchor': link.get('anchor', ''),
                 'text': link.get('anchor', ''),
-                'type': 'editorial'
+                'type': 'editorial',
+                'editorial_type': link.get('editorial_type', EditorialType.POST),
             }
-            if link.get('product_data'):
-                link_dict['product_data'] = link['product_data']
-            all_links.append(link_dict)
+            
+            # Añadir campos HTML según tipo
+            if link.get('editorial_type') == EditorialType.PLP:
+                link_dict['top_text'] = link.get('top_text', '')
+                link_dict['bottom_text'] = link.get('bottom_text', '')
+            else:
+                link_dict['html_content'] = link.get('html_content', '')
+            
+            config['editorial_links'].append(link_dict)
+    
+    # =========================================================================
+    # ENLACES A PRODUCTOS
+    # =========================================================================
+    config['product_links'] = []
     
     if product_links:
         for link in product_links:
@@ -2084,12 +2402,16 @@ def prepare_rewrite_config(
             }
             if link.get('product_data'):
                 link_dict['product_data'] = link['product_data']
-            all_links.append(link_dict)
+            config['product_links'].append(link_dict)
     
+    # =========================================================================
+    # ENLACES UNIFICADOS (compatibilidad)
+    # =========================================================================
+    all_links = config['editorial_links'] + config['product_links']
     config['links'] = all_links
     config['enlaces'] = all_links  # Alias
     
-    # Producto alternativo
+    # Producto alternativo (campo simple de configuración)
     config['producto_alternativo'] = {
         'url': rewrite_config.get('producto_alternativo_url', ''),
         'text': rewrite_config.get('producto_alternativo_text', '')
@@ -2124,20 +2446,26 @@ __all__ = [
     '__version__',
     'RewriteMode',
     'REWRITE_MODE_OPTIONS',
+    'EditorialType',
+    'EDITORIAL_TYPE_OPTIONS',
     'render_rewrite_section',
     'render_keyword_input',
     'render_html_content_section',
     'render_rewrite_instructions_section',
     'render_main_product_section',
+    'render_alternative_products_section',
+    'render_posts_plps_links_section',
+    'render_product_links_section',
     'render_manual_competitors_input',
     'render_competitors_summary',
     'render_rewrite_configuration',
-    'render_posts_plps_links_section',
-    'render_product_links_section',
     'validate_rewrite_inputs',
     'render_generation_summary',
     'prepare_rewrite_config',
     'MAX_COMPETITORS',
+    'MAX_ALTERNATIVE_PRODUCTS',
+    'MAX_EDITORIAL_LINKS',
+    'MAX_PRODUCT_LINKS',
     'DEFAULT_REWRITE_LENGTH',
     'COMPETITION_BEAT_FACTOR',
     'MAX_ARTICLES_TO_MERGE',
